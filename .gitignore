@@ -27,6 +27,13 @@ go.work.sum
 # env file
 .env
 
+# Local fixture files with personal data
+example-response.html
+*.fixture.html
+
+# Claude Code local settings
+.claude/settings.local.json
+
 # Editor/IDE
 # .idea/
 # .vscode/
