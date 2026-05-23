@@ -3,6 +3,7 @@ package ui
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/luddenig/schedule-lookdown/internal/auth"
@@ -14,23 +15,28 @@ type Screen int
 
 const (
 	ScreenLogin Screen = iota
+	ScreenUsername
 	ScreenMenu
 	ScreenSearch
 	ScreenResults
 )
 
 type App struct {
-	screen      Screen
-	session     *auth.Session
-	fixturePath string
-	login       loginModel
-	menu        menuModel
-	search      searchModel
-	results     resultsModel
+	screen         Screen
+	session        *auth.Session
+	storedUsername string
+	fixturePath    string
+	width          int
+	height         int
+	login          loginModel
+	usernamePrompt usernameModel
+	menu           menuModel
+	search         searchModel
+	results        resultsModel
 }
 
 func NewApp(session *auth.Session, initial Screen, fixturePath string) App {
-	return App{
+	app := App{
 		screen:      initial,
 		session:     session,
 		fixturePath: fixturePath,
@@ -39,27 +45,70 @@ func NewApp(session *auth.Session, initial Screen, fixturePath string) App {
 		search:      newSearchModel(),
 		results:     newResultsModel(),
 	}
+	// When bypassing auth (fixture mode or valid cached session), authSuccessMsg
+	// never fires, so check for a stored username here instead.
+	if initial == ScreenMenu {
+		stored, err := auth.RetrieveUsername()
+		if err != nil {
+			app.usernamePrompt = newUsernameModel()
+			app.screen = ScreenUsername
+		} else {
+			app.storedUsername = stored
+		}
+	}
+	return app
 }
 
 func (a App) Init() tea.Cmd {
-	if a.screen == ScreenLogin {
+	switch a.screen {
+	case ScreenLogin:
 		return a.login.Init()
+	case ScreenUsername:
+		return a.usernamePrompt.Init()
+	default:
+		return a.menu.Init()
 	}
-	return a.menu.Init()
+}
+
+func (a *App) applyWindowSizeToMenu() {
+	if a.width > 0 && a.height > 0 {
+		a.menu.list.SetSize(a.width, a.height-4)
+	}
 }
 
 func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
+	case tea.WindowSizeMsg:
+		a.width = msg.Width
+		a.height = msg.Height
 	case tea.KeyMsg:
 		if msg.String() == "ctrl+c" {
 			return a, tea.Quit
 		}
 	case authSuccessMsg:
 		a.session = msg.session
+		stored, err := auth.RetrieveUsername()
+		if err != nil {
+			a.usernamePrompt = newUsernameModel()
+			a.screen = ScreenUsername
+			return a, a.usernamePrompt.Init()
+		}
+		a.storedUsername = stored
 		a.screen = ScreenMenu
+		a.applyWindowSizeToMenu()
+		return a, a.menu.Init()
+	case usernameSubmittedMsg:
+		a.storedUsername = msg.username
+		_ = auth.StoreUsername(msg.username)
+		a.screen = ScreenMenu
+		a.applyWindowSizeToMenu()
+		return a, a.menu.Init()
+	case usernameSkippedMsg:
+		a.screen = ScreenMenu
+		a.applyWindowSizeToMenu()
 		return a, a.menu.Init()
 	case querySelectedMsg:
-		a.search = newSearchModelForQuery(msg.queryType)
+		a.search = newSearchModelForQuery(msg.queryType, a.storedUsername)
 		a.screen = ScreenSearch
 		return a, a.search.Init()
 	case searchSubmittedMsg:
@@ -71,6 +120,7 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return a, nil
 	case backMsg:
 		a.screen = ScreenMenu
+		a.applyWindowSizeToMenu()
 		return a, a.menu.Init()
 	}
 	return a.delegateToScreen(msg)
@@ -90,6 +140,10 @@ func (a App) delegateToScreen(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m, cmd := a.search.Update(msg)
 		a.search = m.(searchModel)
 		return a, cmd
+	case ScreenUsername:
+		m, cmd := a.usernamePrompt.Update(msg)
+		a.usernamePrompt = m.(usernameModel)
+		return a, cmd
 	case ScreenResults:
 		m, cmd := a.results.Update(msg)
 		a.results = m.(resultsModel)
@@ -99,17 +153,28 @@ func (a App) delegateToScreen(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (a App) View() string {
+	var content string
 	switch a.screen {
 	case ScreenLogin:
-		return a.login.View()
+		content = a.login.View()
 	case ScreenMenu:
-		return a.menu.View()
+		content = a.menu.View()
 	case ScreenSearch:
-		return a.search.View()
+		content = a.search.View()
+	case ScreenUsername:
+		content = a.usernamePrompt.View()
 	case ScreenResults:
-		return a.results.View()
+		content = a.results.View()
 	}
-	return ""
+	// Pad to terminal height so the renderer always tracks a consistent line
+	// count. Without this, transitioning from a tall view (e.g. results table)
+	// to a short one leaves old lines below the new content un-erased.
+	if a.height > 0 {
+		if pad := a.height - 1 - strings.Count(content, "\n"); pad > 0 {
+			content += strings.Repeat("\n", pad)
+		}
+	}
+	return content
 }
 
 func executeQueryCmd(session *auth.Session, queryType string, params map[string]string, fixturePath string) tea.Cmd {
