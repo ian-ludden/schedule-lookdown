@@ -3,8 +3,13 @@ package ui
 import (
 	"github.com/charmbracelet/bubbles/table"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 	"github.com/luddenig/schedule-lookdown/internal/query"
 )
+
+var resultsBaseStyle = lipgloss.NewStyle().
+	BorderStyle(lipgloss.NormalBorder()).
+	BorderForeground(lipgloss.Color("1"))
 
 type resultsModel struct {
 	table table.Model
@@ -14,9 +19,29 @@ type resultsModel struct {
 func newResultsModel() resultsModel { return resultsModel{} }
 
 func newResultsModelWithData(result query.Result) resultsModel {
+	colWidths := map[string]int{
+		"Course":               11,
+		"CRN":                   5,
+		"Course Title":         20,
+		"Instructor":           25,
+		"CrHrs":                 7,
+		"Enrl":                  5,
+		"Cap":                   5,
+		"Term Schedule":        20,
+		"Comments":             25,
+		"Final Exam Schedule":  30,
+		"Term Dates":           11,
+	}
+	const defaultColWidth = 15
+
 	cols := make([]table.Column, len(result.Columns))
 	for i, c := range result.Columns {
-		cols[i] = table.Column{Title: c, Width: 16}
+		var colWidth int
+		var ok bool
+		if colWidth, ok = colWidths[c]; !ok {
+			colWidth = defaultColWidth
+		}
+		cols[i] = table.Column{Title: c, Width: colWidth}
 	}
 
 	rows := make([]table.Row, len(result.Rows))
@@ -30,6 +55,19 @@ func newResultsModelWithData(result query.Result) resultsModel {
 		table.WithFocused(true),
 		table.WithHeight(20),
 	)
+
+	s := table.DefaultStyles()
+	s.Header = s.Header.
+		BorderStyle(lipgloss.NormalBorder()).
+		BorderForeground(lipgloss.Color("1")).
+		BorderBottom(true).
+		Bold(false)
+	s.Selected = s.Selected.
+		Foreground(lipgloss.Color("249")).
+		Background(lipgloss.Color("1")).
+		Bold(false)
+	t.SetStyles(s)
+
 	return resultsModel{table: t}
 }
 
@@ -57,7 +95,7 @@ func (m resultsModel) View() string {
 			"\n" + helpStyle.Render("Press esc to go back")
 	}
 	return titleStyle.Render("Results") + "\n" +
-		m.table.View() +
+		resultsBaseStyle.Render(m.table.View()) +
 		"\n" + helpStyle.Render("↑/↓ navigate • esc/q back")
 }
 
