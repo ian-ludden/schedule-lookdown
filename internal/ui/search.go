@@ -12,17 +12,19 @@ type field struct {
 }
 
 type searchModel struct {
-	queryType string
-	fields    []field
-	focused   int
+	queryType      string
+	fields         []field
+	focused        int
+	storedUsername string
 }
 
 func newSearchModel() searchModel { return searchModel{} }
 
-func newSearchModelForQuery(queryType string) searchModel {
+func newSearchModelForQuery(queryType string, storedUsername string) searchModel {
 	return searchModel{
-		queryType: queryType,
-		fields:    fieldsForQuery(queryType),
+		queryType:      queryType,
+		fields:         fieldsForQuery(queryType),
+		storedUsername: storedUsername,
 	}
 }
 
@@ -37,18 +39,18 @@ func fieldsForQuery(queryType string) []field {
 	switch queryType {
 	case "course_search":
 		return []field{
-			{label: "Term", key: "term", input: newInput("202510")},
+			{label: "Term", key: "term", input: newInput("202710")},
 			{label: "Course Code", key: "course_code", input: newInput("CSSE 132")},
 			{label: "Instructor", key: "instructor", input: newInput("Last name")},
 		}
 	case "schedule_lookup":
 		return []field{
-			{label: "Term", key: "term", input: newInput("202510")},
+			{label: "Term", key: "term", input: newInput("202710")},
 			{label: "Username", key: "username", input: newInput("RHIT username")},
 		}
 	case "section_availability":
 		return []field{
-			{label: "Term", key: "term", input: newInput("202510")},
+			{label: "Term", key: "term", input: newInput("202710")},
 			{label: "CRN", key: "crn", input: newInput("12345")},
 		}
 	}
@@ -74,6 +76,15 @@ func (m searchModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		switch msg.String() {
 		case "esc":
 			return m, func() tea.Msg { return backMsg{} }
+		case "^":
+			if m.storedUsername != "" && m.queryType == "schedule_lookup" {
+				for i, f := range m.fields {
+					if f.key == "username" {
+						m.fields[i].input.SetValue(m.storedUsername)
+					}
+				}
+			}
+			return m, nil
 		case "tab", "down":
 			m.fields[m.focused].input.Blur()
 			m.focused = (m.focused + 1) % len(m.fields)
@@ -121,7 +132,11 @@ func (m searchModel) View() string {
 		}
 		s += label + f.input.View() + "\n"
 	}
-	s += "\n" + helpStyle.Render("tab/↑↓ navigate • enter submit • esc back")
+	help := "tab/↑↓ navigate • enter submit • esc back"
+	if m.storedUsername != "" && m.queryType == "schedule_lookup" {
+		help += " • ^ fill my username"
+	}
+	s += "\n" + helpStyle.Render(help)
 	return s
 }
 
