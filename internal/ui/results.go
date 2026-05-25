@@ -11,37 +11,57 @@ var resultsBaseStyle = lipgloss.NewStyle().
 	BorderStyle(lipgloss.NormalBorder()).
 	BorderForeground(lipgloss.Color("1"))
 
+// resultsOverheadLines is the number of lines the results view uses outside
+// the table body: title (1) + blank (1) + outer-border top/bottom (2) +
+// table header (1) + header-separator (1) + blank (1) + help (1).
+const resultsOverheadLines = 8
+
+// cellPadding is the left+right padding bubbles/table adds per cell (1 each side).
+const cellPadding = 2
+
+// outerBorderWidth is the left+right width added by resultsBaseStyle's border.
+const outerBorderWidth = 2
+
+const minColWidth = 3
+const defaultColWidth = 15
+
+var preferredWidths = map[string]int{
+	"Course":              11,
+	"CRN":                  5,
+	"Course Title":        20,
+	"Instructor":          25,
+	"CrHrs":                7,
+	"Enrl":                 5,
+	"Cap":                  5,
+	"Term Schedule":       20,
+	"Comments":            25,
+	"Final Exam Schedule": 30,
+	"Term Dates":          11,
+}
+
 type resultsModel struct {
-	table table.Model
-	err   error
+	table  table.Model
+	result query.Result
+	err    error
+	width  int
+	height int
 }
 
 func newResultsModel() resultsModel { return resultsModel{} }
 
-func newResultsModelWithData(result query.Result) resultsModel {
-	colWidths := map[string]int{
-		"Course":               11,
-		"CRN":                   5,
-		"Course Title":         20,
-		"Instructor":           25,
-		"CrHrs":                 7,
-		"Enrl":                  5,
-		"Cap":                   5,
-		"Term Schedule":        20,
-		"Comments":             25,
-		"Final Exam Schedule":  30,
-		"Term Dates":           11,
-	}
-	const defaultColWidth = 15
+func newResultsModelWithData(result query.Result, width, height int) resultsModel {
+	m := resultsModel{result: result, width: width, height: height}
+	m.table = buildResultsTable(result, width, height)
+	return m
+}
+
+// buildResultsTable creates a table.Model sized to fit within width × height.
+func buildResultsTable(result query.Result, width, height int) table.Model {
+	colWidthMap := computeColWidths(result.Columns, width)
 
 	cols := make([]table.Column, len(result.Columns))
 	for i, c := range result.Columns {
-		var colWidth int
-		var ok bool
-		if colWidth, ok = colWidths[c]; !ok {
-			colWidth = defaultColWidth
-		}
-		cols[i] = table.Column{Title: c, Width: colWidth}
+		cols[i] = table.Column{Title: c, Width: colWidthMap[c]}
 	}
 
 	rows := make([]table.Row, len(result.Rows))
@@ -49,11 +69,16 @@ func newResultsModelWithData(result query.Result) resultsModel {
 		rows[i] = table.Row(r)
 	}
 
+	tableHeight := height - resultsOverheadLines
+	if tableHeight < 1 {
+		tableHeight = 1
+	}
+
 	t := table.New(
 		table.WithColumns(cols),
 		table.WithRows(rows),
 		table.WithFocused(true),
-		table.WithHeight(20),
+		table.WithHeight(tableHeight),
 	)
 
 	s := table.DefaultStyles()
@@ -68,13 +93,57 @@ func newResultsModelWithData(result query.Result) resultsModel {
 		Bold(false)
 	t.SetStyles(s)
 
-	return resultsModel{table: t}
+	return t
+}
+
+// computeColWidths returns column widths scaled to fit termWidth.
+// When termWidth is 0 (not yet known), preferred widths are returned as-is.
+func computeColWidths(cols []string, termWidth int) map[string]int {
+	widths := make(map[string]int, len(cols))
+	totalPreferred := 0
+	for _, c := range cols {
+		w, ok := preferredWidths[c]
+		if !ok {
+			w = defaultColWidth
+		}
+		widths[c] = w
+		totalPreferred += w
+	}
+
+	if termWidth <= 0 {
+		return widths
+	}
+
+	available := termWidth - outerBorderWidth - cellPadding*len(cols)
+	if available < len(cols)*minColWidth {
+		available = len(cols) * minColWidth
+	}
+
+	if available >= totalPreferred {
+		return widths
+	}
+
+	for k, w := range widths {
+		scaled := int(float64(w) * float64(available) / float64(totalPreferred))
+		if scaled < minColWidth {
+			scaled = minColWidth
+		}
+		widths[k] = scaled
+	}
+	return widths
 }
 
 func (m resultsModel) Init() tea.Cmd { return nil }
 
 func (m resultsModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
+	case tea.WindowSizeMsg:
+		m.width = msg.Width
+		m.height = msg.Height
+		if len(m.result.Columns) > 0 {
+			m.table = buildResultsTable(m.result, m.width, m.height)
+		}
+		return m, nil
 	case tea.KeyMsg:
 		switch msg.String() {
 		case "esc", "q":

@@ -3,9 +3,9 @@ package ui
 import (
 	"context"
 	"fmt"
-	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 	"github.com/luddenig/schedule-lookdown/internal/auth"
 	"github.com/luddenig/schedule-lookdown/internal/client"
 	"github.com/luddenig/schedule-lookdown/internal/query"
@@ -115,7 +115,7 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.screen = ScreenResults
 		return a, executeQueryCmd(a.session, msg.queryType, msg.params, a.fixturePath)
 	case queryResultMsg:
-		a.results = newResultsModelWithData(msg.result)
+		a.results = newResultsModelWithData(msg.result, a.width, a.height)
 		a.screen = ScreenResults
 		return a, nil
 	case backMsg:
@@ -166,13 +166,11 @@ func (a App) View() string {
 	case ScreenResults:
 		content = a.results.View()
 	}
-	// Pad to terminal height so the renderer always tracks a consistent line
-	// count. Without this, transitioning from a tall view (e.g. results table)
-	// to a short one leaves old lines below the new content un-erased.
-	if a.height > 0 {
-		if pad := a.height - 1 - strings.Count(content, "\n"); pad > 0 {
-			content += strings.Repeat("\n", pad)
-		}
+	// lipgloss.Place fills the entire terminal rectangle with content, padding
+	// every line to a.width and adding blank lines to reach a.height. This
+	// ensures old characters from the previous screen are always overwritten.
+	if a.width > 0 && a.height > 0 {
+		return lipgloss.Place(a.width, a.height, lipgloss.Left, lipgloss.Top, content)
 	}
 	return content
 }

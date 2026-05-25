@@ -76,7 +76,7 @@ func (m searchModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		switch msg.String() {
 		case "esc":
 			return m, func() tea.Msg { return backMsg{} }
-		case "m":
+		case "^":
 			if m.storedUsername != "" && m.queryType == "schedule_lookup" {
 				for i, f := range m.fields {
 					if f.key == "username" {
@@ -134,7 +134,7 @@ func (m searchModel) View() string {
 	}
 	help := "tab/↑↓ navigate • enter submit • esc back"
 	if m.storedUsername != "" && m.queryType == "schedule_lookup" {
-		help += " • m fill my username"
+		help += " • ^ fill my username"
 	}
 	s += "\n" + helpStyle.Render(help)
 	return s
