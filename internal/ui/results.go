@@ -37,20 +37,30 @@ var preferredWidths = map[string]int{
 	"Comments":            25,
 	"Final Exam Schedule": 30,
 	"Term Dates":          11,
+	"USERNAME":            12,
+	"NAME":                25,
+	"BANNER ID":           12,
+	"MAJOR":               10,
+	"CLASS":                6,
+	"YEAR":                 6,
+	"ADVISOR":             10,
+	"EMAIL":               30,
 }
 
 type resultsModel struct {
-	table  table.Model
-	result query.Result
-	err    error
-	width  int
-	height int
+	table     table.Model
+	result    query.Result
+	queryType string
+	params    map[string]string
+	err       error
+	width     int
+	height    int
 }
 
 func newResultsModel() resultsModel { return resultsModel{} }
 
-func newResultsModelWithData(result query.Result, width, height int) resultsModel {
-	m := resultsModel{result: result, width: width, height: height}
+func newResultsModelWithData(result query.Result, queryType string, params map[string]string, width, height int) resultsModel {
+	m := resultsModel{result: result, queryType: queryType, params: params, width: width, height: height}
 	m.table = buildResultsTable(result, width, height)
 	return m
 }
@@ -148,6 +158,45 @@ func (m resultsModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		switch msg.String() {
 		case "esc", "q":
 			return m, func() tea.Msg { return backMsg{} }
+		case "enter":
+			if m.queryType == "roster_view" {
+				row := m.table.SelectedRow()
+				if len(row) > 0 && row[0] != "" {
+					username, term := row[0], m.params["term"]
+					return m, func() tea.Msg {
+						return searchSubmittedMsg{
+							queryType: "schedule_lookup",
+							params:    map[string]string{"term": term, "username": username},
+						}
+					}
+				}
+			}
+		case "a":
+			if m.queryType == "roster_view" {
+				row := m.table.SelectedRow()
+				if len(row) > 6 && row[6] != "" {
+					advisor, term := row[6], m.params["term"]
+					return m, func() tea.Msg {
+						return searchSubmittedMsg{
+							queryType: "instructor_lookup",
+							params:    map[string]string{"term": term, "username": advisor},
+						}
+					}
+				}
+			}
+		case "r":
+			if m.queryType == "instructor_lookup" {
+				row := m.table.SelectedRow()
+				if len(row) > 0 && row[0] != "" {
+					courseID, term := row[0], m.params["term"]
+					return m, func() tea.Msg {
+						return searchSubmittedMsg{
+							queryType: "roster_view",
+							params:    map[string]string{"term": term, "course_id": courseID},
+						}
+					}
+				}
+			}
 		}
 	case errMsg:
 		m.err = msg.err
@@ -163,9 +212,16 @@ func (m resultsModel) View() string {
 		return errorStyle.Render("Error: "+m.err.Error()) +
 			"\n" + helpStyle.Render("Press esc to go back")
 	}
+	help := "↑/↓ navigate • esc/q back"
+	switch m.queryType {
+	case "roster_view":
+		help += " • enter: view schedule • a: view advisor schedule"
+	case "instructor_lookup":
+		help += " • r: view roster"
+	}
 	return titleStyle.Render("Results") + "\n" +
 		resultsBaseStyle.Render(m.table.View()) +
-		"\n" + helpStyle.Render("↑/↓ navigate • esc/q back")
+		"\n" + helpStyle.Render(help)
 }
 
 var _ tea.Model = resultsModel{}
