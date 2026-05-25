@@ -28,6 +28,7 @@ go.work.sum
 .env
 
 # Local fixture files with personal data
+sample-responses/
 example-response.html
 *.fixture.html
 
@@ -38,3 +39,4 @@ example-response.html
 # Editor/IDE
 # .idea/
 # .vscode/
+
