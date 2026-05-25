@@ -81,6 +81,37 @@ func ParseSections(r io.Reader) ([]models.Section, error) {
 	return sections, nil
 }
 
+// ParseRoster extracts headers and rows from the roster student table in a
+// reg-sched.pl roster response. The response contains two BORDER=1 tables:
+// the first lists section details; the second lists enrolled students.
+func ParseRoster(r io.Reader) ([]string, [][]string, error) {
+	doc, err := goquery.NewDocumentFromReader(r)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	var headers []string
+	var rows [][]string
+
+	doc.Find("table[border]").Eq(1).Find("tr").Each(func(i int, s *goquery.Selection) {
+		if i == 0 {
+			s.Find("th").Each(func(_ int, th *goquery.Selection) {
+				headers = append(headers, strings.TrimSpace(th.Text()))
+			})
+			return
+		}
+		var row []string
+		s.Find("td").Each(func(_ int, td *goquery.Selection) {
+			row = append(row, strings.TrimSpace(td.Text()))
+		})
+		if len(row) > 0 {
+			rows = append(rows, row)
+		}
+	})
+
+	return headers, rows, nil
+}
+
 func atoi(s string) int {
 	n, _ := strconv.Atoi(s)
 	return n

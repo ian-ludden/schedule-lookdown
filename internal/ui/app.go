@@ -25,7 +25,7 @@ type App struct {
 	screen         Screen
 	session        *auth.Session
 	storedUsername string
-	fixturePath    string
+	fixtures       map[string]string // query type → sample file path; nil means use real HTTP
 	width          int
 	height         int
 	login          loginModel
@@ -35,15 +35,15 @@ type App struct {
 	results        resultsModel
 }
 
-func NewApp(session *auth.Session, initial Screen, fixturePath string) App {
+func NewApp(session *auth.Session, initial Screen, fixtures map[string]string) App {
 	app := App{
-		screen:      initial,
-		session:     session,
-		fixturePath: fixturePath,
-		login:       newLoginModel(),
-		menu:        newMenuModel(),
-		search:      newSearchModel(),
-		results:     newResultsModel(),
+		screen:   initial,
+		session:  session,
+		fixtures: fixtures,
+		login:    newLoginModel(),
+		menu:     newMenuModel(),
+		search:   newSearchModel(),
+		results:  newResultsModel(),
 	}
 	// When bypassing auth (fixture mode or valid cached session), authSuccessMsg
 	// never fires, so check for a stored username here instead.
@@ -113,9 +113,9 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return a, a.search.Init()
 	case searchSubmittedMsg:
 		a.screen = ScreenResults
-		return a, executeQueryCmd(a.session, msg.queryType, msg.params, a.fixturePath)
+		return a, executeQueryCmd(a.session, msg.queryType, msg.params, a.fixtures)
 	case queryResultMsg:
-		a.results = newResultsModelWithData(msg.result, a.width, a.height)
+		a.results = newResultsModelWithData(msg.result, msg.queryType, msg.params, a.width, a.height)
 		a.screen = ScreenResults
 		return a, nil
 	case backMsg:
@@ -175,12 +175,16 @@ func (a App) View() string {
 	return content
 }
 
-func executeQueryCmd(session *auth.Session, queryType string, params map[string]string, fixturePath string) tea.Cmd {
+func executeQueryCmd(session *auth.Session, queryType string, params map[string]string, fixtures map[string]string) tea.Cmd {
 	return func() tea.Msg {
 		var c *client.Client
 		var err error
-		if fixturePath != "" {
-			c, err = client.NewFixture(fixturePath)
+		if fixtures != nil {
+			path, ok := fixtures[queryType]
+			if !ok {
+				return errMsg{fmt.Errorf("no sample fixture available for query type: %s", queryType)}
+			}
+			c, err = client.NewFixture(path)
 		} else {
 			if session == nil {
 				return errMsg{fmt.Errorf("no active session")}
@@ -209,6 +213,16 @@ func executeQueryCmd(session *auth.Session, queryType string, params map[string]
 				Term: params["term"],
 				CRN:  params["crn"],
 			}
+		case "roster_view":
+			q = &query.RosterView{
+				Term:     params["term"],
+				CourseID: params["course_id"],
+			}
+		case "instructor_lookup":
+			q = &query.InstructorLookup{
+				Term:     params["term"],
+				Username: params["username"],
+			}
 		default:
 			return errMsg{fmt.Errorf("unknown query type: %s", queryType)}
 		}
@@ -217,7 +231,7 @@ func executeQueryCmd(session *auth.Session, queryType string, params map[string]
 		if err != nil {
 			return errMsg{err}
 		}
-		return queryResultMsg{result}
+		return queryResultMsg{result: result, queryType: queryType, params: params}
 	}
 }
 
@@ -229,7 +243,11 @@ type searchSubmittedMsg struct {
 	queryType string
 	params    map[string]string
 }
-type queryResultMsg struct{ result query.Result }
+type queryResultMsg struct {
+	result    query.Result
+	queryType string
+	params    map[string]string
+}
 type backMsg struct{}
 type errMsg struct{ err error }
 
