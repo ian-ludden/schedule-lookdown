@@ -4,6 +4,7 @@ import (
 	"github.com/charmbracelet/bubbles/table"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/luddenig/schedule-lookdown/internal/models"
 	"github.com/luddenig/schedule-lookdown/internal/query"
 )
 
@@ -158,6 +159,16 @@ func (m resultsModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		switch msg.String() {
 		case "esc", "q":
 			return m, func() tea.Msg { return backMsg{} }
+		case "h":
+			if term := m.params["term"]; term != "" {
+				prev := models.PrevTerm(term)
+				return m, func() tea.Msg { return changeTermMsg{term: prev} }
+			}
+		case "l":
+			if term := m.params["term"]; term != "" {
+				next := models.NextTerm(term)
+				return m, func() tea.Msg { return changeTermMsg{term: next} }
+			}
 		case "enter":
 			if m.queryType == "roster_view" {
 				row := m.table.SelectedRow()
@@ -212,14 +223,18 @@ func (m resultsModel) View() string {
 		return errorStyle.Render("Error: "+m.err.Error()) +
 			"\n" + helpStyle.Render("Press esc to go back")
 	}
-	help := "↑/↓ navigate • esc/q back"
+	title := "Results"
+	if term := m.params["term"]; term != "" {
+		title += " — " + models.TermDisplayName(term)
+	}
+	help := "↑/↓ navigate • h/l prev/next term • esc/q back"
 	switch m.queryType {
 	case "roster_view":
 		help += " • enter: view schedule • a: view advisor schedule"
 	case "instructor_lookup":
 		help += " • r: view roster"
 	}
-	return titleStyle.Render("Results") + "\n" +
+	return titleStyle.Render(title) + "\n" +
 		resultsBaseStyle.Render(m.table.View()) +
 		"\n" + helpStyle.Render(help)
 }
