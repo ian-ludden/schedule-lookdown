@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -54,15 +55,33 @@ func discoverSamples(dir string) map[string]string {
 		}
 		name := strings.ToLower(strings.TrimSuffix(e.Name(), ".html"))
 		path := filepath.Join(dir, e.Name())
+
+		// Determine the query type from the filename.
+		var queryType string
 		switch {
 		case strings.Contains(name, "course"):
-			m["course_search"] = path
+			queryType = "course_search"
 		case strings.Contains(name, "student") || strings.Contains(name, "username"):
-			m["schedule_lookup"] = path
+			queryType = "schedule_lookup"
 		case strings.Contains(name, "roster") && !strings.Contains(name, "combined"):
-			m["roster_view"] = path
+			queryType = "roster_view"
 		case strings.Contains(name, "instructor"):
-			m["instructor_lookup"] = path
+			queryType = "instructor_lookup"
+		}
+		if queryType == "" {
+			continue
+		}
+
+		// Files named "sample-<type>-<termcode>.html" register under a
+		// compound key so term navigation can find the right fixture.
+		// Files without a term code register as the generic fallback.
+		parts := strings.Split(name, "-")
+		last := parts[len(parts)-1]
+		_, numErr := strconv.Atoi(last)
+		if len(last) == 6 && numErr == nil {
+			m[queryType+":"+last] = path
+		} else {
+			m[queryType] = path
 		}
 	}
 	return m

@@ -1,0 +1,290 @@
+-- allium: 3
+-- schedule-lookdown.allium
+--
+-- Scope: Full application behaviour
+-- Includes: Authentication, session persistence, query dispatch, term navigation,
+--           cross-query drilling, username auto-fill, screen flow
+-- Excludes:
+--   - HTML parsing (reg-sched.pl response format)
+--   - HTTP transport and cookie handling
+--   - Terminal layout and column sizing
+--   - BubbleTea framework internals
+--   - Sample/fixture loading (developer tooling only)
+
+-- ─── External entities (from reg-sched.pl) ───────────────────────────────────
+
+external entity Section {
+    course: String
+    crn: String
+    title: String
+    instructor: String
+    credits: Integer
+    enrolled: Integer
+    capacity: Integer
+    schedule: String
+    comments: String
+    final_exam: String
+    term_dates: String
+}
+
+external entity RosterEntry {
+    username: String
+    name: String
+    banner_id: String
+    major: String
+    class_level: String
+    year: String
+    advisor: String
+    email: String
+}
+
+-- ─── Values and config ────────────────────────────────────────────────────────
+
+-- RHIT academic terms follow a fixed four-quarter cycle within each academic year.
+-- The year component of the term code is the end year of the academic year
+-- (e.g. 202630 = Spring 2025-26, 202640 = Summer 2026).
+value Term {
+    code: String
+    quarter: fall | winter | spring | summer
+    year: Integer
+    display_name: String
+    next: Term
+    prev: Term
+}
+
+config {
+    session_duration: Duration = 8.hours
+}
+
+-- ─── Entities ────────────────────────────────────────────────────────────────
+
+entity Session {
+    expires_at: Timestamp
+    status: active | expired
+
+    is_valid: status = active and expires_at > now
+
+    transitions status {
+        active -> expired
+        terminal: expired
+    }
+}
+
+entity StoredUsername {
+    username: String
+}
+
+entity QueryIntent {
+    kind: CourseSearch | ScheduleLookup | SectionAvailability | RosterView | InstructorLookup
+    term: Term
+}
+
+variant CourseSearch : QueryIntent {
+    course_code: String
+    instructor: String
+}
+
+variant ScheduleLookup : QueryIntent {
+    username: String
+}
+
+variant SectionAvailability : QueryIntent {
+    crn: String
+}
+
+variant RosterView : QueryIntent {
+    course_id: String
+}
+
+variant InstructorLookup : QueryIntent {
+    username: String
+}
+
+entity QueryResult {
+    intent: QueryIntent
+    columns: List<String>
+    rows: List<List<String>>
+}
+
+-- ─── Invariants ──────────────────────────────────────────────────────────────
+
+invariant CourseSearchRequiresIdentifier {
+    for intent in QueryIntents where intent.kind = CourseSearch:
+        intent.course_code != "" or intent.instructor != ""
+}
+
+-- ─── Rules ───────────────────────────────────────────────────────────────────
+
+rule SessionExpires {
+    when: session: Session.expires_at <= now
+    requires: session.status = active
+    ensures: session.status = expired
+}
+
+rule UserAuthenticates {
+    when: UserCompletedSAMLLogin
+    ensures: Session.created(
+        expires_at: now + config.session_duration,
+        status: active
+    )
+}
+
+rule UsernameStored {
+    when: UsernameSubmitted(username)
+    ensures: StoredUsername.created(username: username)
+}
+
+rule NavigateToNextTerm {
+    when: UserNavigatesToNextTerm(result)
+    ensures: QueryIntent.created(
+        kind: result.intent.kind,
+        term: result.intent.term.next
+    )
+
+    @guidance
+        -- All query-type-specific parameters (username, course_code, crn, etc.)
+        -- are preserved from the current intent; only the term advances.
+}
+
+rule NavigateToPreviousTerm {
+    when: UserNavigatesToPreviousTerm(result)
+    ensures: QueryIntent.created(
+        kind: result.intent.kind,
+        term: result.intent.term.prev
+    )
+
+    @guidance
+        -- All query-type-specific parameters are preserved; only the term retreats.
+}
+
+rule DrillToStudentSchedule {
+    when: UserSelectsStudentFromRoster(result, entry)
+    requires: result.intent.kind = RosterView
+    requires: entry.username != ""
+    ensures: ScheduleLookup.created(
+        term: result.intent.term,
+        username: entry.username
+    )
+}
+
+rule DrillToAdvisorSchedule {
+    when: UserSelectsAdvisorFromRoster(result, entry)
+    requires: result.intent.kind = RosterView
+    requires: entry.advisor != ""
+    ensures: InstructorLookup.created(
+        term: result.intent.term,
+        username: entry.advisor
+    )
+}
+
+rule DrillToRosterFromInstructor {
+    when: UserSelectsCourseFromInstructorSchedule(result, section)
+    requires: result.intent.kind = InstructorLookup
+    requires: section.course != ""
+    ensures: RosterView.created(
+        term: result.intent.term,
+        course_id: section.course
+    )
+}
+
+-- ─── Surfaces ────────────────────────────────────────────────────────────────
+
+actor Visitor {
+    -- Any person launching the app without a valid cached session.
+    identified_by: identity: String
+}
+
+actor User {
+    identified_by: session: Session where session.is_valid = true
+}
+
+surface LoginScreen {
+    facing visitor: Visitor
+
+    provides:
+        UserCompletedSAMLLogin
+
+    @guarantee CachedSessionBypass
+        -- If a valid session from a prior run exists in the OS keychain, the
+        -- login screen is skipped entirely and the user goes directly to the
+        -- main menu.
+
+    @guarantee SAMLBrowserRedirect
+        -- Authentication is completed by the user in a visible browser window
+        -- via Microsoft SAML. The system waits for the redirect back to the
+        -- registration URL before capturing session cookies.
+}
+
+surface UsernamePrompt {
+    facing user: User
+
+    provides:
+        UsernameSubmitted(username: String)
+        UsernameSkipped
+
+    @guidance
+        -- Shown once after first successful login when no username has been
+        -- persisted. Entering a username enables auto-fill on future Schedule
+        -- Lookup forms. Submitting an empty field, or pressing esc, skips to
+        -- the main menu without storing a username.
+}
+
+surface MainMenu {
+    facing user: User
+
+    provides:
+        UserSelectedQuery(kind: course_search | schedule_lookup | section_availability | roster_view)
+
+    @guidance
+        -- InstructorLookup is intentionally absent from the menu; it is only
+        -- reachable by drilling from a RosterView result.
+}
+
+surface SearchForm {
+    facing user: User
+
+    context intent: QueryIntent
+
+    exposes:
+        intent.kind
+        intent.term
+
+    provides:
+        QuerySubmitted(intent: QueryIntent)
+        UserNavigatedBack
+
+    @guidance
+        -- For ScheduleLookup, the user may press ^ to auto-fill the username
+        -- field from StoredUsername when one has been persisted.
+        -- For CourseSearch, at least one of course_code or instructor must be
+        -- non-empty before submission (see invariant CourseSearchRequiresIdentifier).
+}
+
+surface ResultsScreen {
+    facing user: User
+
+    context result: QueryResult
+
+    exposes:
+        result.intent.term.display_name
+        result.intent.kind
+        result.columns
+        result.rows
+
+    provides:
+        UserNavigatesToNextTerm(result)
+        UserNavigatesToPreviousTerm(result)
+        UserNavigatedBack
+        UserSelectsStudentFromRoster(result, entry: RosterEntry)
+            when result.intent.kind = RosterView
+        UserSelectsAdvisorFromRoster(result, entry: RosterEntry)
+            when result.intent.kind = RosterView and entry.advisor != ""
+        UserSelectsCourseFromInstructorSchedule(result, section: Section)
+            when result.intent.kind = InstructorLookup
+}
+
+-- ─── Open questions ───────────────────────────────────────────────────────────
+
+open question "Does ScheduleLookup require a type= parameter? InstructorLookup uses type=Instructor and RosterView uses type=Roster, but ScheduleLookup currently omits it — needs verification against the live site."
+
+open question "Should StoredUsername support update (re-entering a different username on a subsequent run), or is the first-write permanent until the app is re-installed?"

@@ -112,12 +112,24 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.screen = ScreenSearch
 		return a, a.search.Init()
 	case searchSubmittedMsg:
+		a.results = newResultsModel()
 		a.screen = ScreenResults
 		return a, executeQueryCmd(a.session, msg.queryType, msg.params, a.fixtures)
 	case queryResultMsg:
 		a.results = newResultsModelWithData(msg.result, msg.queryType, msg.params, a.width, a.height)
 		a.screen = ScreenResults
 		return a, nil
+	case changeTermMsg:
+		queryType := a.results.queryType
+		newParams := make(map[string]string, len(a.results.params))
+		for k, v := range a.results.params {
+			newParams[k] = v
+		}
+		newParams["term"] = msg.term
+		// Show the new term in the title immediately while the query loads.
+		a.results = resultsModel{queryType: queryType, params: newParams, width: a.width, height: a.height}
+		a.screen = ScreenResults
+		return a, executeQueryCmd(a.session, queryType, newParams, a.fixtures)
 	case backMsg:
 		a.screen = ScreenMenu
 		a.applyWindowSizeToMenu()
@@ -180,7 +192,11 @@ func executeQueryCmd(session *auth.Session, queryType string, params map[string]
 		var c *client.Client
 		var err error
 		if fixtures != nil {
-			path, ok := fixtures[queryType]
+			key := queryType + ":" + params["term"]
+			path, ok := fixtures[key]
+			if !ok {
+				path, ok = fixtures[queryType]
+			}
 			if !ok {
 				return errMsg{fmt.Errorf("no sample fixture available for query type: %s", queryType)}
 			}
@@ -248,6 +264,7 @@ type queryResultMsg struct {
 	queryType string
 	params    map[string]string
 }
+type changeTermMsg struct{ term string }
 type backMsg struct{}
 type errMsg struct{ err error }
 
