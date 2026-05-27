@@ -224,11 +224,6 @@ func executeQueryCmd(session *auth.Session, queryType string, params map[string]
 				Term:     params["term"],
 				Username: params["username"],
 			}
-		case "section_availability":
-			q = &query.SectionAvailability{
-				Term: params["term"],
-				CRN:  params["crn"],
-			}
 		case "roster_view":
 			q = &query.RosterView{
 				Term:     params["term"],

@@ -48,11 +48,6 @@ func fieldsForQuery(queryType string) []field {
 			{label: "Term", key: "term", input: newInput("202710")},
 			{label: "Username", key: "username", input: newInput("RHIT username")},
 		}
-	case "section_availability":
-		return []field{
-			{label: "Term", key: "term", input: newInput("202710")},
-			{label: "CRN", key: "crn", input: newInput("12345")},
-		}
 	case "roster_view":
 		return []field{
 			{label: "Term", key: "term", input: newInput("202710")},
@@ -151,8 +146,6 @@ func queryDisplayName(key string) string {
 		return "Course Search"
 	case "schedule_lookup":
 		return "Schedule Lookup"
-	case "section_availability":
-		return "Section Availability"
 	case "roster_view":
 		return "Roster View"
 	}

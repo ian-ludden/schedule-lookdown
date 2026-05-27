@@ -17,7 +17,6 @@ func (i queryItem) FilterValue() string { return i.name }
 var queryTypes = []list.Item{
 	queryItem{name: "Course Search", key: "course_search"},
 	queryItem{name: "Schedule Lookup", key: "schedule_lookup"},
-	queryItem{name: "Section Availability", key: "section_availability"},
 	queryItem{name: "Roster View", key: "roster_view"},
 }
 
