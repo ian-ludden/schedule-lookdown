@@ -15,6 +15,7 @@ type Query interface {
 
 // Result holds tabular data returned from a query.
 type Result struct {
-	Columns []string
-	Rows    [][]string
+	Columns  []string
+	Rows     [][]string
+	Metadata map[string]string // optional extra info, e.g. "advisor"
 }

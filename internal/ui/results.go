@@ -167,20 +167,25 @@ func (m resultsModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, func() tea.Msg { return changeTermMsg{term: next} }
 			}
 		case "enter":
-			if m.queryType == "roster_view" {
+			if m.queryType == "roster_view" || m.queryType == "person_search" {
 				row := m.table.SelectedRow()
 				if len(row) > 0 && row[0] != "" {
 					username, term := row[0], m.params["term"]
+					destType := "schedule_lookup"
+					if m.queryType == "person_search" {
+						destType = "instructor_lookup"
+					}
 					return m, func() tea.Msg {
 						return searchSubmittedMsg{
-							queryType: "schedule_lookup",
+							queryType: destType,
 							params:    map[string]string{"term": term, "username": username},
 						}
 					}
 				}
 			}
 		case "a":
-			if m.queryType == "roster_view" {
+			switch m.queryType {
+			case "roster_view":
 				row := m.table.SelectedRow()
 				if len(row) > 6 && row[6] != "" {
 					advisor, term := row[6], m.params["term"]
@@ -191,9 +196,16 @@ func (m resultsModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						}
 					}
 				}
+			case "schedule_lookup":
+				if name := m.result.Metadata["advisor_name"]; name != "" {
+					term := m.params["term"]
+					return m, func() tea.Msg {
+						return advisorSearchMsg{advisorName: name, term: term}
+					}
+				}
 			}
 		case "r":
-			if m.queryType == "instructor_lookup" {
+			if m.queryType == "instructor_lookup" || m.queryType == "schedule_lookup" {
 				row := m.table.SelectedRow()
 				if len(row) > 0 && row[0] != "" {
 					courseID, term := row[0], m.params["term"]
@@ -204,11 +216,11 @@ func (m resultsModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						}
 					}
 				}
-			} else {
-				qt, params := m.queryType, m.params
-				return m, func() tea.Msg {
-					return refreshCurrentQueryMsg{queryType: qt, params: params}
-				}
+			}
+		case "ctrl+r":
+			qt, params := m.queryType, m.params
+			return m, func() tea.Msg {
+				return refreshCurrentQueryMsg{queryType: qt, params: params}
 			}
 		}
 	case errMsg:
@@ -248,6 +260,11 @@ func queryResultTitle(queryType string, params map[string]string) string {
 			return "Instructor — " + u
 		}
 		return "Instructor Lookup"
+	case "person_search":
+		if ln := params["last_name"]; ln != "" {
+			return "Person Search — " + ln + "*"
+		}
+		return "Person Search"
 	}
 	return "Results"
 }
@@ -258,15 +275,27 @@ func (m resultsModel) View() string {
 			"\n" + helpStyle.Render("Press esc to go back")
 	}
 	title := queryResultTitle(m.queryType, m.params)
+
+	if advisorID, ok := m.result.Metadata["advisor"]; ok {
+		title += " - " + advisorID
+	}
+
 	if term := m.params["term"]; term != "" {
 		title += " — " + models.TermDisplayName(term)
 	}
-	help := "↑/↓ navigate • h/l prev/next term • r refresh • esc/q back"
+	help := "↑/↓ navigate • h/l prev/next term • ctrl+r refresh • esc/q back"
 	switch m.queryType {
 	case "roster_view":
 		help += " • enter: view schedule • a: view advisor schedule"
 	case "instructor_lookup":
 		help += " • r: view roster"
+	case "schedule_lookup":
+		help += " • r: view roster"
+		if m.result.Metadata["advisor_name"] != "" {
+			help += " • a: view advisor schedule"
+		}
+	case "person_search":
+		help = "↑/↓ navigate • enter: view advisor schedule • ctrl+r refresh • esc/q back"
 	}
 	return titleStyle.Render(title) + "\n" +
 		resultsBaseStyle.Render(m.table.View()) +

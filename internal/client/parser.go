@@ -9,6 +9,34 @@ import (
 	"github.com/luddenig/schedule-lookdown/internal/models"
 )
 
+// ParseUserInfo extracts key-value metadata from a reg-sched.pl student
+// schedule response. The user-info table has a single <td> with all student
+// fields as <br>-separated text (goquery's Text() concatenates them without
+// newlines), e.g. "Name: Nandini  BregginAdvisor: Ian  Ludden".
+// Returns a map with "advisor_name" set to the advisor's full name when found.
+func ParseUserInfo(r io.Reader) (map[string]string, error) {
+	doc, err := goquery.NewDocumentFromReader(r)
+	if err != nil {
+		return nil, err
+	}
+	meta := map[string]string{}
+	doc.Find("td").Each(func(_ int, cell *goquery.Selection) {
+		if meta["advisor_name"] != "" {
+			return
+		}
+		text := cell.Text()
+		idx := strings.Index(strings.ToLower(text), "advisor:")
+		if idx < 0 {
+			return
+		}
+		name := strings.Join(strings.Fields(text[idx+len("advisor:"):]), " ")
+		if name != "" {
+			meta["advisor_name"] = name
+		}
+	})
+	return meta, nil
+}
+
 // ParseTable extracts headers and rows from the first table with a BORDER
 // attribute — the schedule data table, not the header info table.
 func ParseTable(r io.Reader) ([]string, [][]string, error) {

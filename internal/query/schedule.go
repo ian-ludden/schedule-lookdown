@@ -1,8 +1,10 @@
 package query
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"io"
 	"net/url"
 
 	"github.com/luddenig/schedule-lookdown/internal/client"
@@ -45,9 +47,16 @@ func (q *ScheduleLookup) Execute(ctx context.Context, c *client.Client) (Result,
 	}
 	defer resp.Body.Close()
 
-	cols, rows, err := client.ParseTable(resp.Body)
+	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return Result{}, err
 	}
-	return Result{Columns: cols, Rows: rows}, nil
+
+	cols, rows, err := client.ParseTable(bytes.NewReader(body))
+	if err != nil {
+		return Result{}, err
+	}
+
+	meta, _ := client.ParseUserInfo(bytes.NewReader(body))
+	return Result{Columns: cols, Rows: rows, Metadata: meta}, nil
 }
