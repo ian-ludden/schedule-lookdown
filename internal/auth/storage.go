@@ -6,6 +6,7 @@ const (
 	keyringService  = "schedule-lookdown"
 	keyringUser     = "session"
 	keyringUsername = "username"
+	keyringHistory  = "history"
 )
 
 func StoreUsername(username string) error {
@@ -22,6 +23,18 @@ func storeSession(data []byte) error {
 
 func retrieveSession() ([]byte, error) {
 	val, err := keyring.Get(keyringService, keyringUser)
+	if err != nil {
+		return nil, err
+	}
+	return []byte(val), nil
+}
+
+func StoreHistory(data []byte) error {
+	return keyring.Set(keyringService, keyringHistory, string(data))
+}
+
+func RetrieveHistory() ([]byte, error) {
+	val, err := keyring.Get(keyringService, keyringHistory)
 	if err != nil {
 		return nil, err
 	}

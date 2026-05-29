@@ -3,6 +3,7 @@ package ui
 import (
 	"github.com/charmbracelet/bubbles/list"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 )
 
 type queryItem struct {
@@ -26,6 +27,12 @@ type menuModel struct {
 
 func newMenuModel() menuModel {
 	delegate := list.NewDefaultDelegate()
+	delegate.Styles.SelectedTitle = delegate.Styles.SelectedTitle.
+		Foreground(lipgloss.Color(ROSE_RED)).
+		BorderLeftForeground(lipgloss.Color(ROSE_RED))
+	delegate.Styles.SelectedDesc = delegate.Styles.SelectedDesc.
+		Foreground(lipgloss.Color(ROSE_RED)).
+		BorderLeftForeground(lipgloss.Color(ROSE_RED))
 	l := list.New(queryTypes, delegate, 0, 0)
 	l.Title = "Schedule Lookdown"
 	l.SetShowStatusBar(false)
