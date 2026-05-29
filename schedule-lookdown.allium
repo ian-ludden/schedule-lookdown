@@ -54,6 +54,7 @@ value Term {
 
 config {
     session_duration: Duration = 8.hours
+    history_limit: Integer = 10
 }
 
 -- ─── Entities ────────────────────────────────────────────────────────────────
@@ -106,11 +107,29 @@ entity QueryResult {
     rows: List<List<String>>
 }
 
+-- ─── Query history ──────────────────────────────────────────────────────────
+
+entity QueryHistoryEntry {
+    intent: QueryIntent
+    result: QueryResult
+    fetched_at: Timestamp
+}
+
 -- ─── Invariants ──────────────────────────────────────────────────────────────
 
 invariant CourseSearchRequiresIdentifier {
     for intent in QueryIntents where intent.kind = CourseSearch:
         intent.course_code != "" or intent.instructor != ""
+}
+
+invariant HistoryBounded {
+    QueryHistoryEntries.count <= config.history_limit
+}
+
+invariant HistoryDeduplicated {
+    for a in QueryHistoryEntries:
+        for b in QueryHistoryEntries:
+            a != b implies a.intent != b.intent
 }
 
 -- ─── Rules ───────────────────────────────────────────────────────────────────
@@ -185,6 +204,65 @@ rule DrillToRosterFromInstructor {
         term: result.intent.term,
         course_id: section.course
     )
+}
+
+rule QueryRecorded {
+    when: QueryResultReceived(intent: QueryIntent, result: QueryResult)
+    requires: not exists QueryHistoryEntry{intent: intent}
+    let at_capacity = QueryHistoryEntries.count >= config.history_limit
+    let oldest = min_by(QueryHistoryEntries, e => e.fetched_at)
+    ensures:
+        if at_capacity:
+            not exists oldest
+        QueryHistoryEntry.created(
+            intent: intent,
+            result: result,
+            fetched_at: now
+        )
+
+    @guidance
+        -- QueryResultReceived is emitted whenever a fresh fetch completes:
+        -- SearchForm submission, prev/next term navigation, and all drill
+        -- actions (DrillToStudentSchedule, DrillToAdvisorSchedule,
+        -- DrillToRosterFromInstructor). Explicit refresh of the current
+        -- query goes through QueryRefreshed instead. When the cap is
+        -- already reached, the entry with the earliest fetched_at is
+        -- evicted before the new entry is recorded so the HistoryBounded
+        -- invariant continues to hold.
+}
+
+rule QueryDeduplicated {
+    when: QueryResultReceived(intent: QueryIntent, result: QueryResult)
+    requires: exists QueryHistoryEntry{intent: intent}
+    let existing = QueryHistoryEntry{intent: intent}
+    ensures:
+        existing.result = result
+        existing.fetched_at = now
+
+    @guidance
+        -- A fresh result for an intent already in history updates the
+        -- existing entry in place. Because the panel orders entries by
+        -- fetched_at descending, the refreshed entry naturally moves to
+        -- the top of the list.
+}
+
+rule QueryRefreshed {
+    when: UserRefreshesCurrentQuery(entry: QueryHistoryEntry)
+    ensures: entry.fetched_at = now
+
+    @guidance
+        -- The user explicitly re-fetches the current query. The entry is
+        -- updated in place rather than appended, so no eviction is needed.
+        -- The freshly fetched result replaces entry.result; updating
+        -- fetched_at to now moves the entry to the front of the history
+        -- list.
+}
+
+rule HistoryCleared {
+    when: UserClearsHistory
+    ensures:
+        for entry in QueryHistoryEntries:
+            not exists entry
 }
 
 -- ─── Surfaces ────────────────────────────────────────────────────────────────
@@ -275,12 +353,43 @@ surface ResultsScreen {
         UserNavigatesToNextTerm(result)
         UserNavigatesToPreviousTerm(result)
         UserNavigatedBack
+        UserRefreshesCurrentQuery(entry: QueryHistoryEntry)
         UserSelectsStudentFromRoster(result, entry: RosterEntry)
             when result.intent.kind = RosterView
         UserSelectsAdvisorFromRoster(result, entry: RosterEntry)
             when result.intent.kind = RosterView and entry.advisor != ""
         UserSelectsCourseFromInstructorSchedule(result, section: Section)
             when result.intent.kind = InstructorLookup
+}
+
+surface RecentQueriesPanel {
+    facing user: User
+
+    let history = QueryHistoryEntries
+
+    exposes:
+        for entry in history:
+            entry.intent
+            entry.result
+            entry.fetched_at
+
+    provides:
+        UserSelectedHistoryEntry(entry: QueryHistoryEntry)
+        UserClearsHistory
+
+    @guarantee HistoryPersistence
+        -- Query history is persisted across sessions alongside session
+        -- credentials in the OS keychain.
+
+    @guarantee HistoryOrdering
+        -- Entries are presented to the user ordered by fetched_at
+        -- descending, so the most recently fetched query appears first.
+
+    @guidance
+        -- Shown alongside all screens facing User (UsernamePrompt, MainMenu,
+        -- SearchForm, ResultsScreen). Displays at most config.history_limit
+        -- entries. Selecting an entry navigates directly to its cached
+        -- result without a new fetch.
 }
 
 -- ─── Open questions ───────────────────────────────────────────────────────────
