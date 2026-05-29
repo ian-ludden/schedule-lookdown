@@ -223,10 +223,10 @@ func TestHistoryEntryLabel_AllQueryTypes(t *testing.T) {
 		if len(label) == 0 {
 			t.Errorf("empty label for %s", tc.entry.QueryType)
 		}
-		// Label must fit within the panel width (minus cursor prefix).
-		if len(label) > panelInnerWidth-2 {
+		// Label must fit within the column allocated for it (excluding timestamp).
+		if len(label) > panelLabelWidth {
 			t.Errorf("%s label too long: %d chars (max %d): %q",
-				tc.entry.QueryType, len(label), panelInnerWidth-2, label)
+				tc.entry.QueryType, len(label), panelLabelWidth, label)
 		}
 		found := false
 		for i := range len(label) - len(tc.wantPfx) + 1 {
@@ -246,6 +246,48 @@ func TestHistoryEntryLabel_CourseSearchFallsBackToInstructor(t *testing.T) {
 	label := historyEntryLabel(e)
 	if label == "Course: " {
 		t.Error("course_search with empty course_code should fall back to instructor name")
+	}
+}
+
+func TestFormatTimestamp_TodayShowsTime(t *testing.T) {
+	now := time.Date(2026, 7, 7, 15, 30, 0, 0, time.Local)
+	fetched := time.Date(2026, 7, 7, 9, 5, 0, 0, time.Local)
+	got := formatTimestamp(fetched, now)
+	if got != "09:05" {
+		t.Errorf("today: got %q, want %q", got, "09:05")
+	}
+}
+
+func TestFormatTimestamp_PreviousDayShowsDate(t *testing.T) {
+	now := time.Date(2026, 7, 7, 15, 30, 0, 0, time.Local)
+	fetched := time.Date(2026, 7, 6, 9, 5, 0, 0, time.Local)
+	got := formatTimestamp(fetched, now)
+	if got != "Jul 06" {
+		t.Errorf("previous day: got %q, want %q", got, "Jul 06")
+	}
+}
+
+func TestFormatTimestamp_DifferentYear(t *testing.T) {
+	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.Local)
+	fetched := time.Date(2025, 12, 31, 23, 59, 0, 0, time.Local)
+	got := formatTimestamp(fetched, now)
+	if got != "Dec 31" {
+		t.Errorf("different year: got %q, want %q", got, "Dec 31")
+	}
+}
+
+func TestFormatTimestamp_LengthAlwaysFitsTimestampWidth(t *testing.T) {
+	now := time.Date(2026, 7, 7, 12, 0, 0, 0, time.Local)
+	cases := []time.Time{
+		time.Date(2026, 7, 7, 8, 0, 0, 0, time.Local),  // today
+		time.Date(2026, 7, 1, 8, 0, 0, 0, time.Local),  // earlier this month
+		time.Date(2025, 12, 31, 8, 0, 0, 0, time.Local), // previous year
+	}
+	for _, tc := range cases {
+		got := formatTimestamp(tc, now)
+		if len(got) > panelTimestampWidth {
+			t.Errorf("timestamp %q is %d chars, max is %d", got, len(got), panelTimestampWidth)
+		}
 	}
 }
 

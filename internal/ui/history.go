@@ -101,9 +101,9 @@ func (h *queryHistory) unmarshal(data []byte) error {
 }
 
 func historyEntryLabel(e HistoryEntry) string {
-	// Reserve 2 chars for the "> " cursor prefix; each label prefix accounts
-	// for the rest (e.g. "Course: " = 8 chars).
-	availableWidth := panelInnerWidth - 2
+	// Each label prefix (e.g. "Course: " = 8 chars) is subtracted from
+	// panelLabelWidth to get the space available for the variable part.
+	availableWidth := panelLabelWidth
 	switch e.QueryType {
 	case "course_search":
 		code := e.Params["course_code"]
@@ -120,6 +120,18 @@ func historyEntryLabel(e HistoryEntry) string {
 	default:
 		return e.QueryType
 	}
+}
+
+// formatTimestamp returns a 5-or-6-character timestamp for display in the
+// history panel. Times from today are shown as HH:MM (24-hour local time);
+// times from earlier days are shown as Mon DD (e.g. "Jul 07").
+func formatTimestamp(t, now time.Time) string {
+	tl := t.Local()
+	nl := now.Local()
+	if tl.Year() == nl.Year() && tl.Month() == nl.Month() && tl.Day() == nl.Day() {
+		return tl.Format("15:04") // 5 chars; caller pads to 6 with %6s
+	}
+	return tl.Format("Jan 02") // exactly 6 chars
 }
 
 func truncateStr(s string, max int) string {

@@ -220,12 +220,44 @@ func (m resultsModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, cmd
 }
 
+func queryResultTitle(queryType string, params map[string]string) string {
+	switch queryType {
+	case "schedule_lookup":
+		if u := params["username"]; u != "" {
+			return "Schedule — " + u
+		}
+		return "Schedule Lookup"
+	case "course_search":
+		code, instr := params["course_code"], params["instructor"]
+		switch {
+		case code != "" && instr != "":
+			return "Course Search — " + code + " / " + instr
+		case code != "":
+			return "Course Search — " + code
+		case instr != "":
+			return "Course Search — " + instr
+		}
+		return "Course Search"
+	case "roster_view":
+		if id := params["course_id"]; id != "" {
+			return "Roster — " + id
+		}
+		return "Roster View"
+	case "instructor_lookup":
+		if u := params["username"]; u != "" {
+			return "Instructor — " + u
+		}
+		return "Instructor Lookup"
+	}
+	return "Results"
+}
+
 func (m resultsModel) View() string {
 	if m.err != nil {
 		return errorStyle.Render("Error: "+m.err.Error()) +
 			"\n" + helpStyle.Render("Press esc to go back")
 	}
-	title := "Results"
+	title := queryResultTitle(m.queryType, m.params)
 	if term := m.params["term"]; term != "" {
 		title += " — " + models.TermDisplayName(term)
 	}

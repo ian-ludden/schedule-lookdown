@@ -1,15 +1,20 @@
 package ui
 
 import (
+	"fmt"
 	"strings"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 )
 
 const (
-	panelInnerWidth = 28
-	panelTotalWidth = panelInnerWidth + 2 // NormalBorder adds 1 char each side
+	panelInnerWidth    = 28
+	panelTotalWidth    = panelInnerWidth + 2 // NormalBorder adds 1 char each side
+	panelTimestampWidth = 6
+	// Row layout: "> "/"  " (2) + label + " " + timestamp = panelInnerWidth
+	panelLabelWidth = panelInnerWidth - 2 - 1 - panelTimestampWidth // 19
 )
 
 var (
@@ -99,12 +104,15 @@ func (m historyPanelModel) View() string {
 		b.WriteByte('\n')
 		contentLines++
 	} else {
+		now := time.Now()
 		for i, e := range m.entries {
 			label := historyEntryLabel(e)
+			ts := formatTimestamp(e.FetchedAt, now)
+			row := fmt.Sprintf("%-*s %6s", panelLabelWidth, label, ts)
 			if i == cursor && m.focused {
-				b.WriteString(panelSelectedItemStyle.Render("> " + label))
+				b.WriteString(panelSelectedItemStyle.Render("> " + row))
 			} else {
-				b.WriteString(panelNormalItemStyle.Render("  " + label))
+				b.WriteString(panelNormalItemStyle.Render("  " + row))
 			}
 			b.WriteByte('\n')
 			contentLines++
