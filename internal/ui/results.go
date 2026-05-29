@@ -180,7 +180,8 @@ func (m resultsModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			}
 		case "a":
-			if m.queryType == "roster_view" {
+			switch m.queryType {
+			case "roster_view":
 				row := m.table.SelectedRow()
 				if len(row) > 6 && row[6] != "" {
 					advisor, term := row[6], m.params["term"]
@@ -191,9 +192,19 @@ func (m resultsModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						}
 					}
 				}
+			case "schedule_lookup":
+				if advisor, ok := m.result.Metadata["advisor"]; ok {
+					term := m.params["term"]
+					return m, func() tea.Msg {
+						return searchSubmittedMsg{
+							queryType: "instructor_lookup",
+							params:    map[string]string{"term": term, "username": advisor},
+						}
+					}
+				}
 			}
 		case "r":
-			if m.queryType == "instructor_lookup" {
+			if m.queryType == "instructor_lookup" || m.queryType == "schedule_lookup" {
 				row := m.table.SelectedRow()
 				if len(row) > 0 && row[0] != "" {
 					courseID, term := row[0], m.params["term"]
@@ -204,11 +215,11 @@ func (m resultsModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						}
 					}
 				}
-			} else {
-				qt, params := m.queryType, m.params
-				return m, func() tea.Msg {
-					return refreshCurrentQueryMsg{queryType: qt, params: params}
-				}
+			}
+		case "ctrl+r":
+			qt, params := m.queryType, m.params
+			return m, func() tea.Msg {
+				return refreshCurrentQueryMsg{queryType: qt, params: params}
 			}
 		}
 	case errMsg:
@@ -258,15 +269,25 @@ func (m resultsModel) View() string {
 			"\n" + helpStyle.Render("Press esc to go back")
 	}
 	title := queryResultTitle(m.queryType, m.params)
+
+	if advisorID, ok := m.result.Metadata["advisor"]; ok {
+		title += " - " + advisorID
+	}
+
 	if term := m.params["term"]; term != "" {
 		title += " — " + models.TermDisplayName(term)
 	}
-	help := "↑/↓ navigate • h/l prev/next term • r refresh • esc/q back"
+	help := "↑/↓ navigate • h/l prev/next term • ctrl+r refresh • esc/q back"
 	switch m.queryType {
 	case "roster_view":
 		help += " • enter: view schedule • a: view advisor schedule"
 	case "instructor_lookup":
 		help += " • r: view roster"
+	case "schedule_lookup":
+		help += " • r: view roster"
+		if m.result.Metadata["advisor"] != "" {
+			help += " • a: view advisor schedule"
+		}
 	}
 	return titleStyle.Render(title) + "\n" +
 		resultsBaseStyle.Render(m.table.View()) +
