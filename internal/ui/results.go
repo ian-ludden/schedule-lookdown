@@ -167,13 +167,17 @@ func (m resultsModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, func() tea.Msg { return changeTermMsg{term: next} }
 			}
 		case "enter":
-			if m.queryType == "roster_view" {
+			if m.queryType == "roster_view" || m.queryType == "person_search" {
 				row := m.table.SelectedRow()
 				if len(row) > 0 && row[0] != "" {
 					username, term := row[0], m.params["term"]
+					destType := "schedule_lookup"
+					if m.queryType == "person_search" {
+						destType = "instructor_lookup"
+					}
 					return m, func() tea.Msg {
 						return searchSubmittedMsg{
-							queryType: "schedule_lookup",
+							queryType: destType,
 							params:    map[string]string{"term": term, "username": username},
 						}
 					}
@@ -193,13 +197,10 @@ func (m resultsModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					}
 				}
 			case "schedule_lookup":
-				if advisor, ok := m.result.Metadata["advisor"]; ok {
+				if name := m.result.Metadata["advisor_name"]; name != "" {
 					term := m.params["term"]
 					return m, func() tea.Msg {
-						return searchSubmittedMsg{
-							queryType: "instructor_lookup",
-							params:    map[string]string{"term": term, "username": advisor},
-						}
+						return advisorSearchMsg{advisorName: name, term: term}
 					}
 				}
 			}
@@ -259,6 +260,11 @@ func queryResultTitle(queryType string, params map[string]string) string {
 			return "Instructor — " + u
 		}
 		return "Instructor Lookup"
+	case "person_search":
+		if ln := params["last_name"]; ln != "" {
+			return "Person Search — " + ln + "*"
+		}
+		return "Person Search"
 	}
 	return "Results"
 }
@@ -285,9 +291,11 @@ func (m resultsModel) View() string {
 		help += " • r: view roster"
 	case "schedule_lookup":
 		help += " • r: view roster"
-		if m.result.Metadata["advisor"] != "" {
+		if m.result.Metadata["advisor_name"] != "" {
 			help += " • a: view advisor schedule"
 		}
+	case "person_search":
+		help = "↑/↓ navigate • enter: view advisor schedule • ctrl+r refresh • esc/q back"
 	}
 	return titleStyle.Render(title) + "\n" +
 		resultsBaseStyle.Render(m.table.View()) +

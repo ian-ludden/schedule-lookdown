@@ -67,6 +67,8 @@ func discoverSamples(dir string) map[string]string {
 			queryType = "roster_view"
 		case strings.Contains(name, "instructor"):
 			queryType = "instructor_lookup"
+		case strings.Contains(name, "lastname") || strings.Contains(name, "person"):
+			queryType = "person_search"
 		}
 		if queryType == "" {
 			continue

@@ -3,6 +3,7 @@ package ui
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -176,6 +177,11 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.screen = ScreenResults
 		return a, executeQueryCmd(a.session, msg.queryType, msg.params, a.fixtures)
 
+	case advisorSearchMsg:
+		a.results = newResultsModel()
+		a.screen = ScreenResults
+		return a, advisorSearchCmd(a.session, msg.advisorName, msg.term, a.fixtures)
+
 	case queryResultMsg:
 		a.results = newResultsModelWithData(msg.result, msg.queryType, msg.params, a.mainWidth(), a.height)
 		a.screen = ScreenResults
@@ -331,6 +337,11 @@ func executeQueryCmd(session *auth.Session, queryType string, params map[string]
 				Term:     params["term"],
 				Username: params["username"],
 			}
+		case "person_search":
+			q = &query.PersonSearch{
+				Term:     params["term"],
+				LastName: params["last_name"],
+			}
 		default:
 			return errMsg{fmt.Errorf("unknown query type: %s", queryType)}
 		}
@@ -368,6 +379,73 @@ type historyClearedMsg struct{}
 type refreshCurrentQueryMsg struct {
 	queryType string
 	params    map[string]string
+}
+type advisorSearchMsg struct{ advisorName, term string }
+
+// advisorSearchCmd looks up the advisor's username via a person search by last
+// name, filters by first name, and either auto-navigates (1 match) or returns
+// a disambiguation table (2+ matches).
+func advisorSearchCmd(session *auth.Session, advisorName, term string, fixtures map[string]string) tea.Cmd {
+	return func() tea.Msg {
+		parts := strings.Fields(advisorName)
+		if len(parts) == 0 {
+			return errMsg{fmt.Errorf("advisor name is empty")}
+		}
+		lastName := parts[len(parts)-1]
+		firstName := strings.Join(parts[:len(parts)-1], " ")
+
+		var c *client.Client
+		var err error
+		if fixtures != nil {
+			key := "person_search"
+			path, ok := fixtures[key]
+			if !ok {
+				return errMsg{fmt.Errorf("no fixture available for person_search")}
+			}
+			c, err = client.NewFixture(path)
+		} else {
+			if session == nil {
+				return errMsg{fmt.Errorf("no active session")}
+			}
+			c, err = client.New(session.Cookies)
+		}
+		if err != nil {
+			return errMsg{err}
+		}
+
+		q := &query.PersonSearch{Term: term, LastName: lastName}
+		result, err := q.Execute(context.Background(), c)
+		if err != nil {
+			return errMsg{err}
+		}
+
+		// Filter by first name match (NAME is column 2).
+		var matches [][]string
+		for _, row := range result.Rows {
+			if len(row) < 3 {
+				continue
+			}
+			if firstName == "" || strings.Contains(strings.ToLower(row[2]), strings.ToLower(firstName)) {
+				matches = append(matches, row)
+			}
+		}
+
+		switch len(matches) {
+		case 0:
+			return errMsg{fmt.Errorf("no person named %q found", advisorName)}
+		case 1:
+			return searchSubmittedMsg{
+				queryType: "instructor_lookup",
+				params:    map[string]string{"term": term, "username": matches[0][0]},
+			}
+		default:
+			return queryResultMsg{
+				result:    query.Result{Columns: result.Columns, Rows: matches},
+				queryType: "person_search",
+				params:    map[string]string{"term": term, "last_name": lastName},
+			}
+		}
+	}
 }
 
 var _ tea.Model = App{}

@@ -17,9 +17,9 @@ func TestParseUserInfoAdvisor(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	got := meta["advisor"]
-	const want = "luddenig"
+	got := meta["advisor_name"]
+	const want = "Ian Ludden"
 	if got != want {
-		t.Errorf("advisor = %q, want %q", got, want)
+		t.Errorf("advisor_name = %q, want %q", got, want)
 	}
 }

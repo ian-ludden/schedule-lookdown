@@ -93,11 +93,39 @@ func TestResultsAdvisorFromScheduleLookup(t *testing.T) {
 	m := resultsModel{
 		queryType: "schedule_lookup",
 		params:    map[string]string{"term": "202630", "username": "testuser"},
-		result:    query.Result{Metadata: map[string]string{"advisor": "smithj"}},
+		result:    query.Result{Metadata: map[string]string{"advisor_name": "John Smith"}},
 	}
 	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("a")})
 	if cmd == nil {
 		t.Fatal("a returned nil cmd")
+	}
+	msg := cmd()
+	as, ok := msg.(advisorSearchMsg)
+	if !ok {
+		t.Fatalf("expected advisorSearchMsg, got %T", msg)
+	}
+	if as.advisorName != "John Smith" {
+		t.Errorf("got advisorName %q, want John Smith", as.advisorName)
+	}
+	if as.term != "202630" {
+		t.Errorf("got term %q, want 202630", as.term)
+	}
+}
+
+func TestResultsPersonSearchEnter(t *testing.T) {
+	tbl := table.New(
+		table.WithColumns([]table.Column{{Title: "USERNAME", Width: 12}}),
+		table.WithRows([]table.Row{{"smithj"}}),
+		table.WithFocused(true),
+	)
+	m := resultsModel{
+		queryType: "person_search",
+		params:    map[string]string{"term": "202630", "last_name": "Smith"},
+		table:     tbl,
+	}
+	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if cmd == nil {
+		t.Fatal("enter returned nil cmd")
 	}
 	msg := cmd()
 	ss, ok := msg.(searchSubmittedMsg)
