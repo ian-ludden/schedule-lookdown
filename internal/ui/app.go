@@ -3,6 +3,7 @@ package ui
 import (
 	"context"
 	"fmt"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -33,18 +34,44 @@ type App struct {
 	menu           menuModel
 	search         searchModel
 	results        resultsModel
+	history        queryHistory
+	historyPanel   historyPanelModel
+}
+
+// mainWidth returns the width available for the main content area.
+// On the login screen (no panel) this is the full terminal width.
+func (a App) mainWidth() int {
+	if a.width <= 0 {
+		return 0
+	}
+	if a.screen == ScreenLogin {
+		return a.width
+	}
+	w := a.width - panelTotalWidth
+	if w < 20 {
+		return 20
+	}
+	return w
 }
 
 func NewApp(session *auth.Session, initial Screen, fixtures map[string]string) App {
 	app := App{
-		screen:   initial,
-		session:  session,
-		fixtures: fixtures,
-		login:    newLoginModel(),
-		menu:     newMenuModel(),
-		search:   newSearchModel(),
-		results:  newResultsModel(),
+		screen:       initial,
+		session:      session,
+		fixtures:     fixtures,
+		login:        newLoginModel(),
+		menu:         newMenuModel(),
+		search:       newSearchModel(),
+		results:      newResultsModel(),
+		historyPanel: newHistoryPanelModel(),
 	}
+
+	// Load persisted history.
+	if data, err := auth.RetrieveHistory(); err == nil {
+		_ = app.history.unmarshal(data)
+	}
+	app.historyPanel.entries = app.history.sorted()
+
 	// When bypassing auth (fixture mode or valid cached session), authSuccessMsg
 	// never fires, so check for a stored username here instead.
 	if initial == ScreenMenu {
@@ -71,20 +98,49 @@ func (a App) Init() tea.Cmd {
 }
 
 func (a *App) applyWindowSizeToMenu() {
-	if a.width > 0 && a.height > 0 {
-		a.menu.list.SetSize(a.width, a.height-4)
+	mainW := a.mainWidth()
+	if mainW > 0 && a.height > 0 {
+		a.menu.list.SetSize(mainW, a.height-4)
 	}
 }
 
 func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	// Handle global key events before screen delegation.
+	if keyMsg, ok := msg.(tea.KeyMsg); ok {
+		if keyMsg.String() == "ctrl+c" {
+			return a, tea.Quit
+		}
+		if keyMsg.String() == "ctrl+h" && a.screen != ScreenLogin {
+			a.historyPanel.focused = !a.historyPanel.focused
+			return a, nil
+		}
+		// Route key events to the history panel when it is focused.
+		if a.historyPanel.focused {
+			m, cmd := a.historyPanel.Update(keyMsg)
+			a.historyPanel = m.(historyPanelModel)
+			return a, cmd
+		}
+	}
+
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		a.width = msg.Width
 		a.height = msg.Height
-	case tea.KeyMsg:
-		if msg.String() == "ctrl+c" {
-			return a, tea.Quit
+		a.historyPanel.height = msg.Height
+		// Resize sub-models to the reduced main width; search and username use
+		// fixed-width text inputs and don't need explicit resizing.
+		mainW := a.mainWidth()
+		if mainW > 0 {
+			a.menu.list.SetSize(mainW, a.height-4)
 		}
+		if len(a.results.result.Columns) > 0 {
+			a.results = newResultsModelWithData(a.results.result, a.results.queryType, a.results.params, mainW, a.height)
+		} else {
+			a.results.width = mainW
+			a.results.height = a.height
+		}
+		return a, nil
+
 	case authSuccessMsg:
 		a.session = msg.session
 		stored, err := auth.RetrieveUsername()
@@ -97,28 +153,62 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.screen = ScreenMenu
 		a.applyWindowSizeToMenu()
 		return a, a.menu.Init()
+
 	case usernameSubmittedMsg:
 		a.storedUsername = msg.username
 		_ = auth.StoreUsername(msg.username)
 		a.screen = ScreenMenu
 		a.applyWindowSizeToMenu()
 		return a, a.menu.Init()
+
 	case usernameSkippedMsg:
 		a.screen = ScreenMenu
 		a.applyWindowSizeToMenu()
 		return a, a.menu.Init()
+
 	case querySelectedMsg:
 		a.search = newSearchModelForQuery(msg.queryType, a.storedUsername)
 		a.screen = ScreenSearch
 		return a, a.search.Init()
+
 	case searchSubmittedMsg:
 		a.results = newResultsModel()
 		a.screen = ScreenResults
 		return a, executeQueryCmd(a.session, msg.queryType, msg.params, a.fixtures)
+
 	case queryResultMsg:
-		a.results = newResultsModelWithData(msg.result, msg.queryType, msg.params, a.width, a.height)
+		a.results = newResultsModelWithData(msg.result, msg.queryType, msg.params, a.mainWidth(), a.height)
 		a.screen = ScreenResults
+		a.history.add(HistoryEntry{
+			QueryType: msg.queryType,
+			Params:    msg.params,
+			Result:    msg.result,
+			FetchedAt: time.Now(),
+		})
+		a.historyPanel.entries = a.history.sorted()
+		if data, err := a.history.marshal(); err == nil {
+			_ = auth.StoreHistory(data)
+		}
 		return a, nil
+
+	case historyEntrySelectedMsg:
+		a.results = newResultsModelWithData(msg.result, msg.queryType, msg.params, a.mainWidth(), a.height)
+		a.screen = ScreenResults
+		a.historyPanel.focused = false
+		return a, nil
+
+	case historyClearedMsg:
+		a.history.clear()
+		a.historyPanel.entries = nil
+		a.historyPanel.cursor = 0
+		if data, err := a.history.marshal(); err == nil {
+			_ = auth.StoreHistory(data)
+		}
+		return a, nil
+
+	case refreshCurrentQueryMsg:
+		return a, executeQueryCmd(a.session, msg.queryType, msg.params, a.fixtures)
+
 	case changeTermMsg:
 		queryType := a.results.queryType
 		newParams := make(map[string]string, len(a.results.params))
@@ -127,14 +217,16 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		newParams["term"] = msg.term
 		// Show the new term in the title immediately while the query loads.
-		a.results = resultsModel{queryType: queryType, params: newParams, width: a.width, height: a.height}
+		a.results = resultsModel{queryType: queryType, params: newParams, width: a.mainWidth(), height: a.height}
 		a.screen = ScreenResults
 		return a, executeQueryCmd(a.session, queryType, newParams, a.fixtures)
+
 	case backMsg:
 		a.screen = ScreenMenu
 		a.applyWindowSizeToMenu()
 		return a, a.menu.Init()
 	}
+
 	return a.delegateToScreen(msg)
 }
 
@@ -165,26 +257,31 @@ func (a App) delegateToScreen(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (a App) View() string {
-	var content string
+	var mainContent string
 	switch a.screen {
 	case ScreenLogin:
-		content = a.login.View()
+		mainContent = a.login.View()
 	case ScreenMenu:
-		content = a.menu.View()
+		mainContent = a.menu.View()
 	case ScreenSearch:
-		content = a.search.View()
+		mainContent = a.search.View()
 	case ScreenUsername:
-		content = a.usernamePrompt.View()
+		mainContent = a.usernamePrompt.View()
 	case ScreenResults:
-		content = a.results.View()
+		mainContent = a.results.View()
 	}
-	// lipgloss.Place fills the entire terminal rectangle with content, padding
-	// every line to a.width and adding blank lines to reach a.height. This
-	// ensures old characters from the previous screen are always overwritten.
-	if a.width > 0 && a.height > 0 {
-		return lipgloss.Place(a.width, a.height, lipgloss.Left, lipgloss.Top, content)
+
+	if a.width <= 0 || a.height <= 0 {
+		return mainContent
 	}
-	return content
+
+	// Login screen faces Visitor only — no history panel.
+	if a.screen == ScreenLogin {
+		return lipgloss.Place(a.width, a.height, lipgloss.Left, lipgloss.Top, mainContent)
+	}
+
+	placed := lipgloss.Place(a.mainWidth(), a.height, lipgloss.Left, lipgloss.Top, mainContent)
+	return lipgloss.JoinHorizontal(lipgloss.Top, placed, a.historyPanel.View())
 }
 
 func executeQueryCmd(session *auth.Session, queryType string, params map[string]string, fixtures map[string]string) tea.Cmd {
@@ -262,5 +359,15 @@ type queryResultMsg struct {
 type changeTermMsg struct{ term string }
 type backMsg struct{}
 type errMsg struct{ err error }
+type historyEntrySelectedMsg struct {
+	queryType string
+	params    map[string]string
+	result    query.Result
+}
+type historyClearedMsg struct{}
+type refreshCurrentQueryMsg struct {
+	queryType string
+	params    map[string]string
+}
 
 var _ tea.Model = App{}

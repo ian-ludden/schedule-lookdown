@@ -10,7 +10,7 @@ import (
 
 var resultsBaseStyle = lipgloss.NewStyle().
 	BorderStyle(lipgloss.NormalBorder()).
-	BorderForeground(lipgloss.Color("1"))
+	BorderForeground(lipgloss.Color(ROSE_RED))
 
 // resultsOverheadLines is the number of lines the results view uses outside
 // the table body: title (1) + blank (1) + outer-border top/bottom (2) +
@@ -28,12 +28,12 @@ const defaultColWidth = 15
 
 var preferredWidths = map[string]int{
 	"Course":              11,
-	"CRN":                  5,
+	"CRN":                 5,
 	"Course Title":        20,
 	"Instructor":          25,
-	"CrHrs":                7,
-	"Enrl":                 5,
-	"Cap":                  5,
+	"CrHrs":               7,
+	"Enrl":                5,
+	"Cap":                 5,
 	"Term Schedule":       20,
 	"Comments":            25,
 	"Final Exam Schedule": 30,
@@ -42,8 +42,8 @@ var preferredWidths = map[string]int{
 	"NAME":                25,
 	"BANNER ID":           12,
 	"MAJOR":               10,
-	"CLASS":                6,
-	"YEAR":                 6,
+	"CLASS":               6,
+	"YEAR":                6,
 	"ADVISOR":             10,
 	"EMAIL":               30,
 }
@@ -80,10 +80,7 @@ func buildResultsTable(result query.Result, width, height int) table.Model {
 		rows[i] = table.Row(r)
 	}
 
-	tableHeight := height - resultsOverheadLines
-	if tableHeight < 1 {
-		tableHeight = 1
-	}
+	tableHeight := max(1, height-resultsOverheadLines)
 
 	t := table.New(
 		table.WithColumns(cols),
@@ -95,12 +92,12 @@ func buildResultsTable(result query.Result, width, height int) table.Model {
 	s := table.DefaultStyles()
 	s.Header = s.Header.
 		BorderStyle(lipgloss.NormalBorder()).
-		BorderForeground(lipgloss.Color("1")).
+		BorderForeground(lipgloss.Color(ROSE_RED)).
 		BorderBottom(true).
 		Bold(false)
 	s.Selected = s.Selected.
-		Foreground(lipgloss.Color("249")).
-		Background(lipgloss.Color("1")).
+		Foreground(lipgloss.Color(ROSE_SILVER)).
+		Background(lipgloss.Color(ROSE_RED)).
 		Bold(false)
 	t.SetStyles(s)
 
@@ -207,6 +204,11 @@ func (m resultsModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						}
 					}
 				}
+			} else {
+				qt, params := m.queryType, m.params
+				return m, func() tea.Msg {
+					return refreshCurrentQueryMsg{queryType: qt, params: params}
+				}
 			}
 		}
 	case errMsg:
@@ -227,7 +229,7 @@ func (m resultsModel) View() string {
 	if term := m.params["term"]; term != "" {
 		title += " — " + models.TermDisplayName(term)
 	}
-	help := "↑/↓ navigate • h/l prev/next term • esc/q back"
+	help := "↑/↓ navigate • h/l prev/next term • r refresh • esc/q back"
 	switch m.queryType {
 	case "roster_view":
 		help += " • enter: view schedule • a: view advisor schedule"
