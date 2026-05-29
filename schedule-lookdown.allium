@@ -54,7 +54,7 @@ value Term {
 
 config {
     session_duration: Duration = 8.hours
-    history_limit: Integer = 10
+    history_limit: Integer = 20
 }
 
 -- ─── Entities ────────────────────────────────────────────────────────────────
@@ -76,7 +76,7 @@ entity StoredUsername {
 }
 
 entity QueryIntent {
-    kind: CourseSearch | ScheduleLookup | SectionAvailability | RosterView | InstructorLookup
+    kind: CourseSearch | ScheduleLookup | RosterView | InstructorLookup
     term: Term
 }
 
@@ -87,10 +87,6 @@ variant CourseSearch : QueryIntent {
 
 variant ScheduleLookup : QueryIntent {
     username: String
-}
-
-variant SectionAvailability : QueryIntent {
-    crn: String
 }
 
 variant RosterView : QueryIntent {
@@ -247,15 +243,17 @@ rule QueryDeduplicated {
 }
 
 rule QueryRefreshed {
-    when: UserRefreshesCurrentQuery(entry: QueryHistoryEntry)
-    ensures: entry.fetched_at = now
+    when: UserRefreshesCurrentQuery(result: QueryResult)
+    let existing = QueryHistoryEntry{intent: result.intent}
+    requires: exists existing
+    ensures:
+        existing.result = fetch_result(result.intent)
+        existing.fetched_at = now
 
     @guidance
-        -- The user explicitly re-fetches the current query. The entry is
-        -- updated in place rather than appended, so no eviction is needed.
-        -- The freshly fetched result replaces entry.result; updating
-        -- fetched_at to now moves the entry to the front of the history
-        -- list.
+        -- fetch_result re-issues the query and returns the latest data.
+        -- The existing history entry is updated in place; no eviction
+        -- occurs and the HistoryBounded invariant continues to hold.
 }
 
 rule HistoryCleared {
@@ -263,6 +261,17 @@ rule HistoryCleared {
     ensures:
         for entry in QueryHistoryEntries:
             not exists entry
+}
+
+rule HistoryEntryReactivated {
+    when: UserSelectedHistoryEntry(entry: QueryHistoryEntry)
+    ensures: CachedResultShown(result: entry.result)
+
+    @guidance
+        -- Displays the cached result immediately without a new network
+        -- request. fetched_at is left unchanged; history ordering is
+        -- unaffected. The ResultsScreen surface is shown with entry.result
+        -- as its context.
 }
 
 -- ─── Surfaces ────────────────────────────────────────────────────────────────
@@ -311,7 +320,7 @@ surface MainMenu {
     facing user: User
 
     provides:
-        UserSelectedQuery(kind: course_search | schedule_lookup | section_availability | roster_view)
+        UserSelectedQuery(kind: course_search | schedule_lookup | roster_view)
 
     @guidance
         -- InstructorLookup is intentionally absent from the menu; it is only
@@ -353,7 +362,7 @@ surface ResultsScreen {
         UserNavigatesToNextTerm(result)
         UserNavigatesToPreviousTerm(result)
         UserNavigatedBack
-        UserRefreshesCurrentQuery(entry: QueryHistoryEntry)
+        UserRefreshesCurrentQuery(result)
         UserSelectsStudentFromRoster(result, entry: RosterEntry)
             when result.intent.kind = RosterView
         UserSelectsAdvisorFromRoster(result, entry: RosterEntry)
