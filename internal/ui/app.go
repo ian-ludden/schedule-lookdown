@@ -165,6 +165,23 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.applyWindowSizeToMenu()
 		return a, a.menu.Init()
 
+	case authFailedMsg:
+		// A wrong password stored in the keyring would otherwise leave headless
+		// auth failing on every launch with no way to re-enter it (the password
+		// screen only shows when nothing is stored). On a credential rejection,
+		// clear the stored password and re-prompt so the user can recover.
+		if auth.IsWSL2() && isCredentialError(msg.err) {
+			_ = auth.DeletePassword()
+			a.passwordPrompt = newPasswordModel()
+			a.passwordPrompt.err = msg.err
+			a.screen = ScreenPassword
+			return a, a.passwordPrompt.Init()
+		}
+		// Otherwise surface the error on the login screen (existing behaviour).
+		m, cmd := a.login.Update(msg)
+		a.login = m.(loginModel)
+		return a, cmd
+
 	case usernameNeededMsg:
 		a.usernamePrompt = newUsernameModel()
 		a.screen = ScreenUsername
@@ -176,12 +193,20 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return a, a.passwordPrompt.Init()
 
 	case passwordSubmittedMsg:
-		_ = auth.StorePassword(msg.password)
+		_ = auth.StorePassword(msg.password) // best-effort persistence; may fail without a keyring
 		a.login = newLoginModel()
 		a.screen = ScreenLogin
-		if a.storedUsername != "" {
-			// Bypass keyring lookup; use the username we already have in memory.
-			return a, tea.Batch(a.login.spinner.Tick, doHeadlessAuthCmd(a.storedUsername))
+		// Drive auth with the password we just collected rather than re-reading
+		// it from the keyring, which may be unavailable (e.g. WSL2 with no Secret
+		// Service) and would otherwise submit an empty password.
+		username := a.storedUsername
+		if username == "" {
+			if u, err := auth.RetrieveUsername(); err == nil {
+				username = u
+			}
+		}
+		if username != "" {
+			return a, tea.Batch(a.login.spinner.Tick, doHeadlessAuthCmd(username, msg.password))
 		}
 		return a, a.login.Init()
 
@@ -515,6 +540,20 @@ func advisorSearchCmd(session *auth.Session, advisorName, term string, fixtures 
 			}
 		}
 	}
+}
+
+// isCredentialError reports whether err is Microsoft rejecting the account or
+// password, as opposed to a transient/flow error, so we know to re-prompt for
+// the password rather than just displaying the failure.
+func isCredentialError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "incorrect") ||
+		strings.Contains(msg, "account or password") ||
+		strings.Contains(msg, "isn't correct") ||
+		strings.Contains(msg, "is not correct")
 }
 
 var _ tea.Model = App{}

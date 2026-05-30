@@ -38,6 +38,10 @@ func RetrievePassword() (string, error) {
 	return keyring.Get(keyringService, keyringPassword)
 }
 
+func DeletePassword() error {
+	return keyring.Delete(keyringService, keyringPassword)
+}
+
 func StoreHistory(data []byte) error {
 	return keyring.Set(keyringService, keyringHistory, string(data))
 }

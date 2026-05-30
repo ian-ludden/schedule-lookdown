@@ -76,12 +76,12 @@ func doAuthCmd() tea.Cmd {
 		if err != nil || username == "" {
 			return func() tea.Msg { return usernameNeededMsg{} }
 		}
-		_, err = auth.RetrievePassword()
+		password, err := auth.RetrievePassword()
 		if err != nil {
-			// Password not stored yet — ask for it.
+			// Password not stored (or keyring unavailable) — ask for it.
 			return func() tea.Msg { return passwordNeededMsg{} }
 		}
-		return doHeadlessAuthCmd(username)
+		return doHeadlessAuthCmd(username, password)
 	}
 
 	// Non-WSL2: open a visible browser window.
@@ -111,17 +111,21 @@ func doAuthCmdForUsername(username string) tea.Cmd {
 			return authSuccessMsg{session}
 		}
 	}
-	_, err := auth.RetrievePassword()
+	password, err := auth.RetrievePassword()
 	if err != nil {
 		return func() tea.Msg { return passwordNeededMsg{} }
 	}
-	return doHeadlessAuthCmd(username)
+	return doHeadlessAuthCmd(username, password)
 }
 
 // doHeadlessAuthCmd starts headless auth for WSL2 and returns a batch of
 // commands: one that forwards status updates to the TUI, one that waits for
 // an MFA code request, and one that waits for the final result.
-func doHeadlessAuthCmd(username string) tea.Cmd {
+// doHeadlessAuthCmd takes the password directly rather than re-reading it from
+// the keyring: on systems without an OS keyring (e.g. WSL2 with no Secret
+// Service) the stored copy is unavailable, and re-fetching it would submit an
+// empty password. Callers pass the value they already hold.
+func doHeadlessAuthCmd(username, password string) tea.Cmd {
 	statusCh := make(chan string, 4)
 	resultCh := make(chan tea.Msg, 1)
 	codeNeededCh := make(chan struct{}, 1)
@@ -130,7 +134,6 @@ func doHeadlessAuthCmd(username string) tea.Cmd {
 	go func() {
 		defer close(statusCh)
 		defer close(codeNeededCh)
-		password, _ := auth.RetrievePassword()
 		cookies, err := auth.AuthenticateHeadless(
 			context.Background(), username, password,
 			func(s string) { select { case statusCh <- s: default: } },

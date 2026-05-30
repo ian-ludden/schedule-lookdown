@@ -7,6 +7,7 @@ import (
 
 type passwordModel struct {
 	input textinput.Model
+	err   error // set when re-prompting after a rejected password
 }
 
 func newPasswordModel() passwordModel {
@@ -41,6 +42,9 @@ func (m passwordModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 func (m passwordModel) View() string {
 	s := titleStyle.Render("Schedule Lookdown") + "\n"
 	s += subtitleStyle.Render("Microsoft authentication") + "\n\n"
+	if m.err != nil {
+		s += errorStyle.Render("Previous sign-in failed: "+m.err.Error()) + "\n\n"
+	}
 	s += normalStyle.Render("Password: ") + m.input.View() + "\n"
 	s += "\n" + helpStyle.Render("enter sign in • esc cancel")
 	return s
