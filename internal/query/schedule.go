@@ -15,7 +15,7 @@ import (
 // where TT is 10=Fall, 20=Winter, 30=Spring.
 type ScheduleLookup struct {
 	Term     string // e.g. "202630"
-	Username string // RHIT username, e.g. "luddenig"
+	Username string // RHIT username, e.g. "valer"
 }
 
 func (q *ScheduleLookup) Name() string { return "Schedule Lookup" }

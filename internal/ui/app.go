@@ -13,6 +13,10 @@ import (
 	"github.com/luddenig/schedule-lookdown/internal/query"
 )
 
+// sampleUsername seeds the stored username in fixture mode so the Schedule
+// Lookup form prefills without a keyring entry.
+const sampleUsername = "quinna"
+
 type Screen int
 
 const (
@@ -79,9 +83,13 @@ func NewApp(session *auth.Session, initial Screen, fixtures map[string]string) A
 	}
 	app.historyPanel.entries = app.history.sorted()
 
-	// When bypassing auth (fixture mode or valid cached session), authSuccessMsg
-	// never fires, so check for a stored username here instead.
-	if initial == ScreenMenu {
+	// In fixture mode there is no auth at all, so never prompt for a username;
+	// seed a fake one so the Schedule Lookup form prefills.
+	if app.fixtureMode() {
+		app.storedUsername = sampleUsername
+	} else if initial == ScreenMenu {
+		// When bypassing auth with a valid cached session, authSuccessMsg never
+		// fires, so check for a stored username here instead.
 		stored, err := auth.RetrieveUsername()
 		if err != nil {
 			app.usernamePrompt = newUsernameModel()
@@ -92,6 +100,10 @@ func NewApp(session *auth.Session, initial Screen, fixtures map[string]string) A
 	}
 	return app
 }
+
+// fixtureMode reports whether the app serves queries from local sample files
+// instead of authenticating and hitting the network.
+func (a App) fixtureMode() bool { return a.fixtures != nil }
 
 func (a App) Init() tea.Cmd {
 	switch a.screen {
@@ -232,7 +244,7 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case usernameSubmittedMsg:
 		a.storedUsername = msg.username
 		_ = auth.StoreUsername(msg.username)
-		if a.session == nil {
+		if a.session == nil && !a.fixtureMode() {
 			// Bypass keyring round-trip; drive auth with the username we just got.
 			a.login = newLoginModel()
 			a.screen = ScreenLogin
@@ -243,7 +255,7 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return a, a.menu.Init()
 
 	case usernameSkippedMsg:
-		if a.session == nil {
+		if a.session == nil && !a.fixtureMode() {
 			// Can't proceed without a username on WSL2 headless auth.
 			return a, tea.Quit
 		}

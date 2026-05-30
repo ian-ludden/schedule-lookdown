@@ -27,8 +27,9 @@ go.work.sum
 # env file
 .env
 
-# Local fixture files with personal data
-sample-responses/
+# Ad-hoc local response captures that may contain personal data.
+# NOTE: sample-responses/ is intentionally tracked — it holds anonymized
+# (fake-data) fixtures used by --load-samples and CI tests. See its README.
 example-response.html
 *.fixture.html
 

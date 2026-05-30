@@ -10,7 +10,7 @@ import (
 
 type InstructorLookup struct {
 	Term     string
-	Username string // instructor's RHIT username, e.g. "luddenig"
+	Username string // instructor's RHIT username, e.g. "valer"
 }
 
 func (q *InstructorLookup) Name() string { return "Instructor Lookup" }

@@ -35,11 +35,44 @@ func collectMsgs(cmd tea.Cmd) []tea.Msg {
 	return []tea.Msg{msg}
 }
 
+// TestLoadSamplesReachesMenuAndQueries locks the --load-samples path: in
+// fixture mode the app must land on the menu (never the username/login prompt,
+// since session is nil by design) and run a query straight from fixtures.
+func TestLoadSamplesReachesMenuAndQueries(t *testing.T) {
+	fixtures := map[string]string{
+		"schedule_lookup": "../../sample-responses/sample-student.html",
+	}
+	app := NewApp(nil, ScreenMenu, fixtures)
+	if app.screen != ScreenMenu {
+		t.Fatalf("fixture mode landed on screen %v, want ScreenMenu", app.screen)
+	}
+
+	// querySelectedMsg → searchSubmittedMsg → queryResultMsg, no auth involved.
+	app2, _ := driveUpdate(app, querySelectedMsg{queryType: "schedule_lookup"})
+	_, qmsg := driveUpdate(app2, searchSubmittedMsg{
+		queryType: "schedule_lookup",
+		params:    map[string]string{"term": "202630", "username": "quinna"},
+	})
+
+	var qr queryResultMsg
+	for _, m := range collectMsgs(func() tea.Msg { return qmsg }) {
+		if q, ok := m.(queryResultMsg); ok {
+			qr = q
+		}
+		if em, ok := m.(errMsg); ok {
+			t.Fatalf("fixture query produced errMsg: %v", em.err)
+		}
+	}
+	if len(qr.result.Rows) == 0 {
+		t.Error("expected fixture query to return rows")
+	}
+}
+
 func TestAdvisorSearchCmdSingleMatch(t *testing.T) {
 	fixtures := map[string]string{
 		"person_search": "../../sample-responses/sample-lastname-search.html",
 	}
-	cmd := advisorSearchCmd(nil, "Ian Ludden", "202630", fixtures)
+	cmd := advisorSearchCmd(nil, "Robin Vale", "202630", fixtures)
 	msg := cmd()
 
 	ss, ok := msg.(searchSubmittedMsg)
@@ -49,8 +82,8 @@ func TestAdvisorSearchCmdSingleMatch(t *testing.T) {
 	if ss.queryType != "instructor_lookup" {
 		t.Errorf("queryType = %q, want instructor_lookup", ss.queryType)
 	}
-	if ss.params["username"] != "luddenig" {
-		t.Errorf("username = %q, want luddenig", ss.params["username"])
+	if ss.params["username"] != "valer" {
+		t.Errorf("username = %q, want valer", ss.params["username"])
 	}
 	if ss.params["term"] != "202630" {
 		t.Errorf("term = %q, want 202630", ss.params["term"])
@@ -65,7 +98,7 @@ func TestAdvisorSearchIntegration(t *testing.T) {
 	app := NewApp(nil, ScreenResults, fixtures)
 
 	// Step 1: advisorSearchMsg → batch contains advisorSearchCmd result
-	model, cmd1 := app.Update(advisorSearchMsg{advisorName: "Ian Ludden",
+	model, cmd1 := app.Update(advisorSearchMsg{advisorName: "Robin Vale",
 		term: "202630"})
 	app2 := model.(App)
 
@@ -81,8 +114,8 @@ func TestAdvisorSearchIntegration(t *testing.T) {
 	if ss.queryType != "instructor_lookup" {
 		t.Errorf("queryType = %q, want instructor_lookup", ss.queryType)
 	}
-	if ss.params["username"] != "luddenig" {
-		t.Errorf("username = %q, want luddenig", ss.params["username"])
+	if ss.params["username"] != "valer" {
+		t.Errorf("username = %q, want valer", ss.params["username"])
 	}
 
 	// Step 2: searchSubmittedMsg → batch contains executeQueryCmd result
@@ -117,7 +150,7 @@ func TestAppTermNavIntegration(t *testing.T) {
 			Rows:    [][]string{{"CSSE474-02", "3096"}},
 		},
 		"schedule_lookup",
-		map[string]string{"term": "202610", "username": "bregginr"},
+		map[string]string{"term": "202610", "username": "quinna"},
 		120, 40,
 	)
 	app.screen = ScreenResults
