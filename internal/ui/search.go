@@ -1,8 +1,6 @@
 package ui
 
 import (
-	"time"
-
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/luddenig/schedule-lookdown/internal/models"
@@ -32,15 +30,15 @@ type searchModel struct {
 
 func newSearchModel() searchModel { return searchModel{} }
 
-func newSearchModelForQuery(queryType string, storedUsername string) searchModel {
+func newSearchModelForQuery(queryType string, storedUsername string, defaultTerm string) searchModel {
 	return searchModel{
 		queryType:      queryType,
-		fields:         fieldsForQuery(queryType),
+		fields:         fieldsForQuery(queryType, defaultTerm),
 		storedUsername: storedUsername,
 	}
 }
 
-func fieldsForQuery(queryType string) []field {
+func fieldsForQuery(queryType string, defaultTerm string) []field {
 	newInput := func(placeholder string) textinput.Model {
 		t := textinput.New()
 		t.Placeholder = placeholder
@@ -48,7 +46,7 @@ func fieldsForQuery(queryType string) []field {
 		return t
 	}
 
-	termField := field{label: "Term", key: "term", kind: fieldTerm, term: models.CurrentTerm(time.Now())}
+	termField := field{label: "Term", key: "term", kind: fieldTerm, term: defaultTerm}
 
 	switch queryType {
 	case "course_search":

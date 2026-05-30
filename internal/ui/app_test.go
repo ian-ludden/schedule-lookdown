@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/luddenig/schedule-lookdown/internal/config"
 	"github.com/luddenig/schedule-lookdown/internal/query"
 )
 
@@ -42,7 +43,7 @@ func TestLoadSamplesReachesMenuAndQueries(t *testing.T) {
 	fixtures := map[string]string{
 		"schedule_lookup": "../../sample-responses/sample-student.html",
 	}
-	app := NewApp(nil, ScreenMenu, fixtures)
+	app := NewApp(nil, config.Default(), ScreenMenu, fixtures)
 	if app.screen != ScreenMenu {
 		t.Fatalf("fixture mode landed on screen %v, want ScreenMenu", app.screen)
 	}
@@ -95,7 +96,7 @@ func TestAdvisorSearchIntegration(t *testing.T) {
 		"person_search":     "../../sample-responses/sample-lastname-search.html",
 		"instructor_lookup": "../../sample-responses/sample-instructor.html",
 	}
-	app := NewApp(nil, ScreenResults, fixtures)
+	app := NewApp(nil, config.Default(), ScreenResults, fixtures)
 
 	// Step 1: advisorSearchMsg → batch contains advisorSearchCmd result
 	model, cmd1 := app.Update(advisorSearchMsg{advisorName: "Robin Vale",
@@ -143,7 +144,7 @@ func TestAppTermNavIntegration(t *testing.T) {
 	fixtures := map[string]string{
 		"schedule_lookup": "../../sample-responses/sample-student.html",
 	}
-	app := NewApp(nil, ScreenResults, fixtures)
+	app := NewApp(nil, config.Default(), ScreenResults, fixtures)
 	app.results = newResultsModelWithData(
 		query.Result{
 			Columns: []string{"Course", "CRN"},
