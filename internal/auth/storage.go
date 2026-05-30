@@ -7,6 +7,7 @@ const (
 	keyringUser     = "session"
 	keyringUsername = "username"
 	keyringHistory  = "history"
+	keyringPassword = "password"
 )
 
 func StoreUsername(username string) error {
@@ -27,6 +28,14 @@ func retrieveSession() ([]byte, error) {
 		return nil, err
 	}
 	return []byte(val), nil
+}
+
+func StorePassword(password string) error {
+	return keyring.Set(keyringService, keyringPassword, password)
+}
+
+func RetrievePassword() (string, error) {
+	return keyring.Get(keyringService, keyringPassword)
 }
 
 func StoreHistory(data []byte) error {

@@ -18,6 +18,8 @@ type Screen int
 const (
 	ScreenLogin Screen = iota
 	ScreenUsername
+	ScreenPassword
+	ScreenMFACode
 	ScreenMenu
 	ScreenSearch
 	ScreenResults
@@ -32,6 +34,9 @@ type App struct {
 	height         int
 	login          loginModel
 	usernamePrompt usernameModel
+	passwordPrompt passwordModel
+	mfaCode        mfaCodeModel
+	mfaCodeCh      chan<- string // non-nil while waiting for user to enter SMS code
 	menu           menuModel
 	search         searchModel
 	results        resultsModel
@@ -45,7 +50,7 @@ func (a App) mainWidth() int {
 	if a.width <= 0 {
 		return 0
 	}
-	if a.screen == ScreenLogin {
+	if a.screen == ScreenLogin || a.screen == ScreenPassword || a.screen == ScreenUsername || a.screen == ScreenMFACode {
 		return a.width
 	}
 	w := a.width - panelTotalWidth
@@ -57,14 +62,15 @@ func (a App) mainWidth() int {
 
 func NewApp(session *auth.Session, initial Screen, fixtures map[string]string) App {
 	app := App{
-		screen:       initial,
-		session:      session,
-		fixtures:     fixtures,
-		login:        newLoginModel(),
-		menu:         newMenuModel(),
-		search:       newSearchModel(),
-		results:      newResultsModel(),
-		historyPanel: newHistoryPanelModel(),
+		screen:         initial,
+		session:        session,
+		fixtures:       fixtures,
+		login:          newLoginModel(),
+		passwordPrompt: newPasswordModel(),
+		menu:           newMenuModel(),
+		search:         newSearchModel(),
+		results:        newResultsModel(),
+		historyPanel:   newHistoryPanelModel(),
 	}
 
 	// Load persisted history.
@@ -93,6 +99,10 @@ func (a App) Init() tea.Cmd {
 		return a.login.Init()
 	case ScreenUsername:
 		return a.usernamePrompt.Init()
+	case ScreenPassword:
+		return a.passwordPrompt.Init()
+	case ScreenMFACode:
+		return a.mfaCode.Init()
 	default:
 		return a.menu.Init()
 	}
@@ -155,14 +165,61 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.applyWindowSizeToMenu()
 		return a, a.menu.Init()
 
+	case usernameNeededMsg:
+		a.usernamePrompt = newUsernameModel()
+		a.screen = ScreenUsername
+		return a, a.usernamePrompt.Init()
+
+	case passwordNeededMsg:
+		a.passwordPrompt = newPasswordModel()
+		a.screen = ScreenPassword
+		return a, a.passwordPrompt.Init()
+
+	case passwordSubmittedMsg:
+		_ = auth.StorePassword(msg.password)
+		a.login = newLoginModel()
+		a.screen = ScreenLogin
+		if a.storedUsername != "" {
+			// Bypass keyring lookup; use the username we already have in memory.
+			return a, tea.Batch(a.login.spinner.Tick, doHeadlessAuthCmd(a.storedUsername))
+		}
+		return a, a.login.Init()
+
+	case passwordCancelledMsg:
+		return a, tea.Quit
+
+	case mfaCodeNeededMsg:
+		a.mfaCodeCh = msg.codeCh
+		a.mfaCode = newMFACodeModel()
+		a.screen = ScreenMFACode
+		return a, a.mfaCode.Init()
+
+	case mfaCodeSubmittedMsg:
+		if a.mfaCodeCh != nil {
+			a.mfaCodeCh <- msg.code
+			a.mfaCodeCh = nil
+		}
+		a.screen = ScreenLogin
+		return a, nil
+
 	case usernameSubmittedMsg:
 		a.storedUsername = msg.username
 		_ = auth.StoreUsername(msg.username)
+		if a.session == nil {
+			// Bypass keyring round-trip; drive auth with the username we just got.
+			a.login = newLoginModel()
+			a.screen = ScreenLogin
+			return a, tea.Batch(a.login.spinner.Tick, doAuthCmdForUsername(msg.username))
+		}
 		a.screen = ScreenMenu
 		a.applyWindowSizeToMenu()
 		return a, a.menu.Init()
 
 	case usernameSkippedMsg:
+		if a.session == nil {
+			// Can't proceed without a username on WSL2 headless auth.
+			return a, tea.Quit
+		}
 		a.screen = ScreenMenu
 		a.applyWindowSizeToMenu()
 		return a, a.menu.Init()
@@ -254,6 +311,14 @@ func (a App) delegateToScreen(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m, cmd := a.usernamePrompt.Update(msg)
 		a.usernamePrompt = m.(usernameModel)
 		return a, cmd
+	case ScreenPassword:
+		m, cmd := a.passwordPrompt.Update(msg)
+		a.passwordPrompt = m.(passwordModel)
+		return a, cmd
+	case ScreenMFACode:
+		m, cmd := a.mfaCode.Update(msg)
+		a.mfaCode = m.(mfaCodeModel)
+		return a, cmd
 	case ScreenResults:
 		m, cmd := a.results.Update(msg)
 		a.results = m.(resultsModel)
@@ -273,6 +338,10 @@ func (a App) View() string {
 		mainContent = a.search.View()
 	case ScreenUsername:
 		mainContent = a.usernamePrompt.View()
+	case ScreenPassword:
+		mainContent = a.passwordPrompt.View()
+	case ScreenMFACode:
+		mainContent = a.mfaCode.View()
 	case ScreenResults:
 		mainContent = a.results.View()
 	}
@@ -281,8 +350,8 @@ func (a App) View() string {
 		return mainContent
 	}
 
-	// Login screen faces Visitor only — no history panel.
-	if a.screen == ScreenLogin {
+	// Auth screens have no history panel.
+	if a.screen == ScreenLogin || a.screen == ScreenPassword || a.screen == ScreenUsername || a.screen == ScreenMFACode {
 		return lipgloss.Place(a.width, a.height, lipgloss.Left, lipgloss.Top, mainContent)
 	}
 
