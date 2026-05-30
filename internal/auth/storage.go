@@ -10,20 +10,24 @@ const (
 	keyringPassword = "password"
 )
 
+// Username and the session use setWithFallback/getWithFallback so they persist
+// even when the OS keyring is unavailable (e.g. WSL2). The password stays
+// keyring-only below and is never written to disk.
+
 func StoreUsername(username string) error {
-	return keyring.Set(keyringService, keyringUsername, username)
+	return setWithFallback(keyringUsername, username)
 }
 
 func RetrieveUsername() (string, error) {
-	return keyring.Get(keyringService, keyringUsername)
+	return getWithFallback(keyringUsername)
 }
 
 func storeSession(data []byte) error {
-	return keyring.Set(keyringService, keyringUser, string(data))
+	return setWithFallback(keyringUser, string(data))
 }
 
 func retrieveSession() ([]byte, error) {
-	val, err := keyring.Get(keyringService, keyringUser)
+	val, err := getWithFallback(keyringUser)
 	if err != nil {
 		return nil, err
 	}
