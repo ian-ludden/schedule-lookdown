@@ -509,7 +509,7 @@ func advisorSearchCmd(session *auth.Session, advisorName, term string, fixtures 
 			return errMsg{err}
 		}
 
-		q := &query.PersonSearch{Term: term, LastName: lastName}
+		q := &query.PersonSearch{Term: term, LastName: strings.ToLower(lastName)}
 		result, err := q.Execute(context.Background(), c)
 		if err != nil {
 			return errMsg{err}

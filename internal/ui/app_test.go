@@ -17,6 +17,95 @@ func driveUpdate(a App, msg tea.Msg) (App, tea.Msg) {
 	return a, cmd()
 }
 
+// collectMsgs runs cmd and recursively unwraps any tea.BatchMsg,
+// returning all leaf messages.
+// Useful for assertions when handlers use tea.Batch.
+func collectMsgs(cmd tea.Cmd) []tea.Msg {
+	if cmd == nil {
+		return nil
+	}
+	msg := cmd()
+	if batch, ok := msg.(tea.BatchMsg); ok {
+		var out []tea.Msg
+		for _, c := range batch {
+			out = append(out, collectMsgs(c)...)
+		}
+		return out
+	}
+	return []tea.Msg{msg}
+}
+
+func TestAdvisorSearchCmdSingleMatch(t *testing.T) {
+	fixtures := map[string]string{
+		"person_search": "../../sample-responses/sample-lastname-search.html",
+	}
+	cmd := advisorSearchCmd(nil, "Ian Ludden", "202630", fixtures)
+	msg := cmd()
+
+	ss, ok := msg.(searchSubmittedMsg)
+	if !ok {
+		t.Fatalf("expected searchSubmittedMsg, got %T (%v)", msg, msg)
+	}
+	if ss.queryType != "instructor_lookup" {
+		t.Errorf("queryType = %q, want instructor_lookup", ss.queryType)
+	}
+	if ss.params["username"] != "luddenig" {
+		t.Errorf("username = %q, want luddenig", ss.params["username"])
+	}
+	if ss.params["term"] != "202630" {
+		t.Errorf("term = %q, want 202630", ss.params["term"])
+	}
+}
+
+func TestAdvisorSearchIntegration(t *testing.T) {
+	fixtures := map[string]string{
+		"person_search":     "../../sample-responses/sample-lastname-search.html",
+		"instructor_lookup": "../../sample-responses/sample-instructor.html",
+	}
+	app := NewApp(nil, ScreenResults, fixtures)
+
+	// Step 1: advisorSearchMsg → batch contains advisorSearchCmd result
+	model, cmd1 := app.Update(advisorSearchMsg{advisorName: "Ian Ludden",
+		term: "202630"})
+	app2 := model.(App)
+
+	var ss searchSubmittedMsg
+	for _, m := range collectMsgs(cmd1) {
+		if s, ok := m.(searchSubmittedMsg); ok {
+			ss = s
+		}
+		if em, ok := m.(errMsg); ok {
+			t.Fatalf("advisorSearchMsg produced errMsg: %v", em.err)
+		}
+	}
+	if ss.queryType != "instructor_lookup" {
+		t.Errorf("queryType = %q, want instructor_lookup", ss.queryType)
+	}
+	if ss.params["username"] != "luddenig" {
+		t.Errorf("username = %q, want luddenig", ss.params["username"])
+	}
+
+	// Step 2: searchSubmittedMsg → batch contains executeQueryCmd result
+	_, cmd2 := app2.Update(ss)
+
+	var qr queryResultMsg
+	for _, m := range collectMsgs(cmd2) {
+		if q, ok := m.(queryResultMsg); ok {
+			qr = q
+		}
+		if em, ok := m.(errMsg); ok {
+			t.Fatalf("searchSubmittedMsg produced errMsg: %v", em.err)
+		}
+	}
+	if qr.queryType != "instructor_lookup" {
+		t.Errorf("queryResultMsg.queryType = %q, want instructor_lookup",
+			qr.queryType)
+	}
+	if len(qr.result.Rows) == 0 {
+		t.Error("expected at least one course row in instructor results")
+	}
+}
+
 func TestAppTermNavIntegration(t *testing.T) {
 	fixtures := map[string]string{
 		"schedule_lookup": "../../sample-responses/sample-student.html",
