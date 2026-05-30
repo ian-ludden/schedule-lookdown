@@ -31,12 +31,11 @@ func (q *CourseSearch) Execute(ctx context.Context, c *client.Client) (Result, e
 		return Result{}, err
 	}
 
-	// TODO: verify actual parameter names and whether GET or POST is used.
-	// Observed pattern from HTML: type=Roster&termcode=202630&view=tgrid&id=CSSE474-01
 	params := url.Values{
+		"type":     {"Course"},
 		"termcode": {q.Term},
-		"id":       {q.CourseCode},
 		"view":     {"tgrid"},
+		"id":       {q.CourseCode},
 	}
 	if q.Instructor != "" {
 		params.Set("instructor", q.Instructor)
