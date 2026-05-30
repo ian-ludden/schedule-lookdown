@@ -4,7 +4,7 @@ A Terminal User Interface for the Schedule Lookup service at Rose-Hulman Institu
 ## Requirements
 
 - **Go 1.21+**
-- **Chrome or Chromium (non-snap)** — used to complete the Microsoft SAML login in a visible browser window
+- **Chrome or Chromium (non-snap)** — used to drive the Microsoft SAML login (headless on WSL2, in a visible window elsewhere)
   - macOS: install [Google Chrome](https://www.google.com/chrome/)
   - Linux / WSL2 — **amd64:**
     ```bash
@@ -20,9 +20,32 @@ A Terminal User Interface for the Schedule Lookup service at Rose-Hulman Institu
   - > **Note:** `sudo apt install chromium-browser` on Ubuntu 22.04+ installs a **snap** package, which does not work with this app due to snap's filesystem confinement. Use the options above instead.
   - Custom path: set `SCHEDULE_LOOKDOWN_BROWSER=/path/to/chrome` in your environment
 
-### WSL2 note
+## Running
 
-The login window opens in a real browser, so a display server is required.
+```bash
+go run ./cmd/schedule-lookdown
+```
+
+## Authentication
+
+The app authenticates against Rose-Hulman's Microsoft SAML login. How it does so depends on your platform.
+
+### WSL2 — automated headless login
+
+On WSL2 the login runs in **headless** Chrome and is fully automated — **no display server is required**. On first run the TUI prompts for your Rose-Hulman username and password and drives the Microsoft login for you. Every login it then prompts for the **SMS code** texted to your phone.
+
+Credential persistence:
+- Your **username** is remembered between runs.
+- Your **password** is kept in the OS keyring when one is available (and is **never written to disk**). If no keyring/Secret Service is present, you'll be prompted for it each session.
+- The **SMS code** is required on every login.
+
+### macOS / native Linux — visible browser
+
+On platforms that aren't WSL2, the app opens a **real Chrome window** for you to complete the Microsoft login manually. This requires a display server — on a normal macOS or Linux desktop one is already running, so there's nothing to set up.
+
+#### No display server
+
+If the visible-browser path runs without a display (a headless/remote Linux box, or a WSL environment not auto-detected as WSL2), Chrome can't open and login fails. To provide a display:
 
 - **Windows 11 (22H2+):** WSLg is built in — the window should appear automatically.
 - **Windows 10 / older Windows 11:** Install [VcXsrv](https://sourceforge.net/projects/vcxsrv/) or [X410](https://x410.app/), then add this to your shell profile (`~/.bashrc` or `~/.zshrc`):
