@@ -144,33 +144,68 @@ func buildResultsTable(result query.Result, width, height, reserved int) table.M
 // computeColWidths returns column widths scaled to fit termWidth.
 // When termWidth is 0 (not yet known), preferred widths are returned as-is.
 func computeColWidths(cols []string, termWidth int) map[string]int {
+	widths, totalPreferred := buildPreferredWidths(cols)
+	if termWidth <= 0 {
+		return widths
+	}
+	available := calcAvailable(termWidth, len(cols))
+	if available >= totalPreferred {
+		return widths
+	}
+	high, med, low, sumHigh, sumMed := partitionByPriority(cols, widths)
+	lowMin := len(low) * minColWidth
+	remainAfterLow := available - lowMin
+	switch {
+	case remainAfterLow >= sumHigh+sumMed:
+		// HIGH + MEDIUM fit at preferred; distribute surplus to LOW proportionally.
+		sumLow := 0
+		for _, c := range low {
+			sumLow += widths[c]
+		}
+		distributeSurplus(low, widths, remainAfterLow-sumHigh-sumMed, sumLow)
+	case remainAfterLow >= sumHigh:
+		// HIGH fits at preferred; scale MEDIUM into remainder; LOW gets minimum.
+		setToMin(low, widths)
+		scaleProportionally(med, widths, remainAfterLow-sumHigh, sumMed)
+	default:
+		// Even HIGH doesn't fit; scale HIGH proportionally; LOW and MEDIUM get minimum.
+		setToMin(low, widths)
+		setToMin(med, widths)
+		scaleProportionally(high, widths, remainAfterLow, sumHigh)
+	}
+	return widths
+}
+
+// buildPreferredWidths returns a widths map initialised from preferredWidths (or
+// defaultColWidth for unknown columns) and the sum of those preferred widths.
+func buildPreferredWidths(cols []string) (map[string]int, int) {
 	widths := make(map[string]int, len(cols))
-	totalPreferred := 0
+	total := 0
 	for _, c := range cols {
 		w, ok := preferredWidths[c]
 		if !ok {
 			w = defaultColWidth
 		}
 		widths[c] = w
-		totalPreferred += w
+		total += w
 	}
+	return widths, total
+}
 
-	if termWidth <= 0 {
-		return widths
+// calcAvailable returns the usable pixel width after subtracting borders and
+// per-cell padding, floored so every column can fit at minColWidth.
+func calcAvailable(termWidth, numCols int) int {
+	available := termWidth - outerBorderWidth - cellPadding*numCols
+	if available < numCols*minColWidth {
+		available = numCols * minColWidth
 	}
+	return available
+}
 
-	available := termWidth - outerBorderWidth - cellPadding*len(cols)
-	if available < len(cols)*minColWidth {
-		available = len(cols) * minColWidth
-	}
-
-	if available >= totalPreferred {
-		return widths
-	}
-
-	// Partition columns by priority tier.
-	var highCols, medCols, lowCols []string
-	sumHigh, sumMed := 0, 0
+// partitionByPriority splits cols into high-, medium-, and low-priority slices
+// using columnPriority (defaultPriority for unknown columns) and returns the
+// sum of preferred widths for the high and medium groups.
+func partitionByPriority(cols []string, widths map[string]int) (high, med, low []string, sumHigh, sumMed int) {
 	for _, c := range cols {
 		p := columnPriority[c]
 		if p == 0 {
@@ -178,68 +213,50 @@ func computeColWidths(cols []string, termWidth int) map[string]int {
 		}
 		switch {
 		case p >= 3:
-			highCols = append(highCols, c)
+			high = append(high, c)
 			sumHigh += widths[c]
 		case p == 2:
-			medCols = append(medCols, c)
+			med = append(med, c)
 			sumMed += widths[c]
 		default:
-			lowCols = append(lowCols, c)
+			low = append(low, c)
 		}
 	}
+	return
+}
 
-	lowMin := len(lowCols) * minColWidth
-	remainAfterLow := available - lowMin
+// setToMin sets every column in cols to minColWidth in widths.
+func setToMin(cols []string, widths map[string]int) {
+	for _, c := range cols {
+		widths[c] = minColWidth
+	}
+}
 
-	switch {
-	case remainAfterLow >= sumHigh+sumMed:
-		// HIGH + MEDIUM fit at preferred; distribute surplus to LOW proportionally.
-		surplus := remainAfterLow - sumHigh - sumMed
-		sumLow := 0
-		for _, c := range lowCols {
-			sumLow += widths[c]
-		}
-		for _, c := range lowCols {
-			extra := 0
-			if sumLow > 0 {
-				extra = int(float64(widths[c]) * float64(surplus) / float64(sumLow))
-			}
-			widths[c] = minColWidth + extra
-		}
-		// HIGH and MEDIUM stay at preferred (already set).
-
-	case remainAfterLow >= sumHigh:
-		// HIGH fits at preferred; scale MEDIUM into remainder; LOW gets minimum.
-		for _, c := range lowCols {
-			widths[c] = minColWidth
-		}
-		medAvail := remainAfterLow - sumHigh
-		for _, c := range medCols {
-			scaled := int(float64(widths[c]) * float64(medAvail) / float64(sumMed))
+// scaleProportionally scales each column in cols to its proportional share of
+// budget (relative to sum), with a minColWidth floor. It mutates widths in place.
+func scaleProportionally(cols []string, widths map[string]int, budget, sum int) {
+	for _, c := range cols {
+		scaled := minColWidth
+		if sum > 0 {
+			scaled = int(float64(widths[c]) * float64(budget) / float64(sum))
 			if scaled < minColWidth {
 				scaled = minColWidth
 			}
-			widths[c] = scaled
 		}
-		// HIGH stays at preferred.
-
-	default:
-		// Even HIGH doesn't fit; scale HIGH proportionally; LOW and MEDIUM get minimum.
-		for _, c := range lowCols {
-			widths[c] = minColWidth
-		}
-		for _, c := range medCols {
-			widths[c] = minColWidth
-		}
-		for _, c := range highCols {
-			scaled := int(float64(widths[c]) * float64(remainAfterLow) / float64(sumHigh))
-			if scaled < minColWidth {
-				scaled = minColWidth
-			}
-			widths[c] = scaled
-		}
+		widths[c] = scaled
 	}
-	return widths
+}
+
+// distributeSurplus sets each column in cols to minColWidth plus a proportional
+// share of surplus (relative to sumCols). It mutates widths in place.
+func distributeSurplus(cols []string, widths map[string]int, surplus, sumCols int) {
+	for _, c := range cols {
+		extra := 0
+		if sumCols > 0 {
+			extra = int(float64(widths[c]) * float64(surplus) / float64(sumCols))
+		}
+		widths[c] = minColWidth + extra
+	}
 }
 
 func (m resultsModel) Init() tea.Cmd {
