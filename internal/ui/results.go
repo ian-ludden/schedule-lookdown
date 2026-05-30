@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"github.com/charmbracelet/bubbles/spinner"
 	"github.com/charmbracelet/bubbles/table"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -54,11 +55,18 @@ type resultsModel struct {
 	queryType string
 	params    map[string]string
 	err       error
+	spinner   spinner.Model
+	loading   bool
 	width     int
 	height    int
 }
 
-func newResultsModel() resultsModel { return resultsModel{} }
+func newResultsModel() resultsModel {
+	s := spinner.New()
+	s.Spinner = spinner.Dot
+	s.Style = selectedStyle
+	return resultsModel{spinner: s, loading: true}
+}
 
 func newResultsModelWithData(result query.Result, queryType string, params map[string]string, width, height int) resultsModel {
 	m := resultsModel{result: result, queryType: queryType, params: params, width: width, height: height}
@@ -141,7 +149,12 @@ func computeColWidths(cols []string, termWidth int) map[string]int {
 	return widths
 }
 
-func (m resultsModel) Init() tea.Cmd { return nil }
+func (m resultsModel) Init() tea.Cmd {
+	if m.loading {
+		return m.spinner.Tick
+	}
+	return nil
+}
 
 func (m resultsModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
@@ -223,6 +236,12 @@ func (m resultsModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return refreshCurrentQueryMsg{queryType: qt, params: params}
 			}
 		}
+	case spinner.TickMsg:
+		if m.loading {
+			var cmd tea.Cmd
+			m.spinner, cmd = m.spinner.Update(msg)
+			return m, cmd
+		}
 	case errMsg:
 		m.err = msg.err
 		return m, nil
@@ -297,6 +316,13 @@ func (m resultsModel) View() string {
 	case "person_search":
 		help = "↑/↓ navigate • enter: view advisor schedule • ctrl+r refresh • esc/q back"
 	}
+
+	if m.loading {
+		return titleStyle.Render("Loading...") + "\n\n" +
+			m.spinner.View() + " Retrieving results..." + "\n\n" +
+			helpStyle.Render("esc/q back")
+	}
+
 	return titleStyle.Render(title) + "\n" +
 		resultsBaseStyle.Render(m.table.View()) +
 		"\n" + helpStyle.Render(help)
