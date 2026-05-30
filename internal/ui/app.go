@@ -10,6 +10,8 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/luddenig/schedule-lookdown/internal/auth"
 	"github.com/luddenig/schedule-lookdown/internal/client"
+	"github.com/luddenig/schedule-lookdown/internal/config"
+	"github.com/luddenig/schedule-lookdown/internal/models"
 	"github.com/luddenig/schedule-lookdown/internal/query"
 )
 
@@ -32,6 +34,8 @@ const (
 type App struct {
 	screen         Screen
 	session        *auth.Session
+	config         config.Config
+	latestTerm     string // furthest-future term from reg-sched.pl; "" until fetched
 	storedUsername string
 	fixtures       map[string]string // query type → sample file path; nil means use real HTTP
 	width          int
@@ -64,10 +68,11 @@ func (a App) mainWidth() int {
 	return w
 }
 
-func NewApp(session *auth.Session, initial Screen, fixtures map[string]string) App {
+func NewApp(session *auth.Session, cfg config.Config, initial Screen, fixtures map[string]string) App {
 	app := App{
 		screen:         initial,
 		session:        session,
+		config:         cfg,
 		fixtures:       fixtures,
 		login:          newLoginModel(),
 		passwordPrompt: newPasswordModel(),
@@ -105,6 +110,26 @@ func NewApp(session *auth.Session, initial Screen, fixtures map[string]string) A
 // instead of authenticating and hitting the network.
 func (a App) fixtureMode() bool { return a.fixtures != nil }
 
+// resolvedDefaultTerm returns the term code the search form should pre-select,
+// honouring the user's default_term setting. When set to "latest" it uses the
+// fetched latest term, falling back to the computed current term if the fetch
+// hasn't completed (or failed).
+func (a App) resolvedDefaultTerm() string {
+	if a.config.DefaultTerm == config.DefaultTermLatest && a.latestTerm != "" {
+		return a.latestTerm
+	}
+	return models.CurrentTerm(time.Now())
+}
+
+// maybeFetchTermsCmd returns a command that fetches the latest available term
+// when the user defaults to "latest" and a live session is available, else nil.
+func (a App) maybeFetchTermsCmd() tea.Cmd {
+	if a.config.DefaultTerm != config.DefaultTermLatest || a.fixtureMode() || a.session == nil {
+		return nil
+	}
+	return fetchDefaultTermCmd(a.session)
+}
+
 func (a App) Init() tea.Cmd {
 	switch a.screen {
 	case ScreenLogin:
@@ -116,7 +141,7 @@ func (a App) Init() tea.Cmd {
 	case ScreenMFACode:
 		return a.mfaCode.Init()
 	default:
-		return a.menu.Init()
+		return tea.Batch(a.menu.Init(), a.maybeFetchTermsCmd())
 	}
 }
 
@@ -177,7 +202,11 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		a.screen = ScreenMenu
 		a.applyWindowSizeToMenu()
-		return a, a.menu.Init()
+		return a, tea.Batch(a.menu.Init(), a.maybeFetchTermsCmd())
+
+	case termsLoadedMsg:
+		a.latestTerm = msg.latest
+		return a, nil
 
 	case authFailedMsg:
 		// A wrong password stored in the keyring would otherwise leave headless
@@ -252,7 +281,7 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		a.screen = ScreenMenu
 		a.applyWindowSizeToMenu()
-		return a, a.menu.Init()
+		return a, tea.Batch(a.menu.Init(), a.maybeFetchTermsCmd())
 
 	case usernameSkippedMsg:
 		if a.session == nil && !a.fixtureMode() {
@@ -264,14 +293,14 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return a, a.menu.Init()
 
 	case querySelectedMsg:
-		a.search = newSearchModelForQuery(msg.queryType, a.storedUsername)
+		a.search = newSearchModelForQuery(msg.queryType, a.storedUsername, a.resolvedDefaultTerm())
 		a.screen = ScreenSearch
 		return a, a.search.Init()
 
 	case searchSubmittedMsg:
 		a.results = newResultsModel()
 		a.screen = ScreenResults
-		return a, tea.Batch(a.results.Init(), executeQueryCmd(a.session, msg.queryType, msg.params, a.fixtures))
+		return a, tea.Batch(a.results.Init(), executeQueryCmd(a.session, msg.queryType, msg.params, a.fixtures, a.config.JumpToRosterOnSingleResult))
 
 	case advisorSearchMsg:
 		a.results = newResultsModel()
@@ -312,7 +341,7 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.results = newResultsModel()
 		a.results.width = a.mainWidth()
 		a.results.height = a.height
-		return a, tea.Batch(a.results.Init(), executeQueryCmd(a.session, msg.queryType, msg.params, a.fixtures))
+		return a, tea.Batch(a.results.Init(), executeQueryCmd(a.session, msg.queryType, msg.params, a.fixtures, false))
 
 	case changeTermMsg:
 		queryType := a.results.queryType
@@ -325,7 +354,7 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.results.width = a.mainWidth()
 		a.results.height = a.height
 		a.screen = ScreenResults
-		return a, tea.Batch(a.results.Init(), executeQueryCmd(a.session, queryType, newParams, a.fixtures))
+		return a, tea.Batch(a.results.Init(), executeQueryCmd(a.session, queryType, newParams, a.fixtures, false))
 
 	case backMsg:
 		a.screen = ScreenMenu
@@ -402,7 +431,7 @@ func (a App) View() string {
 	return lipgloss.JoinHorizontal(lipgloss.Top, placed, a.historyPanel.View())
 }
 
-func executeQueryCmd(session *auth.Session, queryType string, params map[string]string, fixtures map[string]string) tea.Cmd {
+func executeQueryCmd(session *auth.Session, queryType string, params map[string]string, fixtures map[string]string, jumpToRoster bool) tea.Cmd {
 	return func() tea.Msg {
 		var c *client.Client
 		var err error
@@ -462,12 +491,45 @@ func executeQueryCmd(session *auth.Session, queryType string, params map[string]
 		if err != nil {
 			return errMsg{err}
 		}
+		// When enabled, a single course-search hit jumps straight to that
+		// course's roster instead of showing a one-row table. row[0] is the
+		// course id, matching the 'r' key course→roster navigation in results.go.
+		if jumpToRoster && queryType == "course_search" && len(result.Rows) == 1 {
+			row := result.Rows[0]
+			if len(row) > 0 && row[0] != "" {
+				return searchSubmittedMsg{
+					queryType: "roster_view",
+					params:    map[string]string{"term": params["term"], "course_id": row[0]},
+				}
+			}
+		}
 		return queryResultMsg{result: result, queryType: queryType, params: params}
+	}
+}
+
+// fetchDefaultTermCmd fetches reg-sched.pl's available terms and reports the
+// furthest-future one via termsLoadedMsg. Any failure yields an empty latest so
+// the app silently falls back to the computed current term.
+func fetchDefaultTermCmd(session *auth.Session) tea.Cmd {
+	return func() tea.Msg {
+		if session == nil {
+			return termsLoadedMsg{}
+		}
+		c, err := client.New(session.Cookies)
+		if err != nil {
+			return termsLoadedMsg{}
+		}
+		codes, err := query.FetchAvailableTerms(context.Background(), c)
+		if err != nil {
+			return termsLoadedMsg{}
+		}
+		return termsLoadedMsg{latest: models.LatestTerm(codes)}
 	}
 }
 
 // Message types for inter-screen transitions.
 type authSuccessMsg struct{ session *auth.Session }
+type termsLoadedMsg struct{ latest string }
 type authFailedMsg struct{ err error }
 type querySelectedMsg struct{ queryType string }
 type searchSubmittedMsg struct {

@@ -27,6 +27,8 @@ The app is a BubbleTea TUI that authenticates via Microsoft SAML and queries Ros
 4. `query/` implements the `Query` interface — each type sets the correct GET params and calls the parser. Key params: `termcode` (format `YYYYTT`, e.g. `202630` for Spring 2025-26), `id` (username or course code), `view=tgrid`.
 5. `ui/app.go` is the root BubbleTea model managing four screens (`ScreenLogin → ScreenMenu → ScreenSearch → ScreenResults`). Screen transitions happen via custom message types (`authSuccessMsg`, `querySelectedMsg`, `searchSubmittedMsg`, `queryResultMsg`, `backMsg`). Each sub-model (`loginModel`, `menuModel`, `searchModel`, `resultsModel`) implements `tea.Model` and lives as a field on `App`; the root delegates to the active screen via type assertions in `delegateToScreen`.
 
+**User config (`internal/config`):** `config.Load()` reads `$XDG_CONFIG_HOME/schedule-lookdown/config.toml` (default `~/.config/...`), writing a commented default file on first run. Loaded in `main.go` and passed to `ui.NewApp`. Two settings today: `default_term` (`"current"` = computed from today, or `"latest"` = furthest-future term from reg-sched.pl) and `jump_to_roster_on_single_result` (course search with one hit jumps straight to its roster). It's deliberately structured so an in-app settings screen can be added later. Defaults preserve prior behaviour; invalid values coerce to defaults. For `"latest"`, `App` fetches the term drop-down once after auth (`fetchDefaultTermCmd` → `termsLoadedMsg`) and falls back to the computed current term if the fetch hasn't landed.
+
 **Headless SAML automation (`AuthenticateHeadless`):**
 The Microsoft login is a Knockout SPA, so the flow is a polling state machine: each loop runs `detectState` (a JS snippet that classifies the current page) and acts on the result — `aad_tile` (account picker) → `pwd_page` → `sms_tile` (MFA method picker) → `sms_code` (OTC entry) → `kmsi` ("Stay signed in?") → `done` (back on `registrationURL`, capture cookies). Hard-won conventions when editing this:
 - **Use single concrete id selectors** with `chromedp.SendKeys`/`Click` (e.g. `#idTxtBx_SAOTCC_OTC`, `#idSubmit_SAOTCC_Continue`). Comma-list selectors silently fail through chromedp.
@@ -36,6 +38,7 @@ The Microsoft login is a Knockout SPA, so the flow is a polling state machine: e
 
 **Key unknowns still to verify against the live site:**
 - Whether a `type=` param is required for person schedule lookups (course.go and availability.go TODOs).
+- Whether a bare GET (no params) to `reg-sched.pl` returns the form page containing the `<select name="termcode">` drop-down that `query.FetchAvailableTerms` / `client.ParseTermOptions` parse (used for `default_term = "latest"`). See the TODO in `query/terms.go`.
 
 ## Data model
 

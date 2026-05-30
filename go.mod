@@ -3,6 +3,7 @@ module github.com/luddenig/schedule-lookdown
 go 1.23
 
 require (
+	github.com/BurntSushi/toml v1.6.0
 	github.com/PuerkitoBio/goquery v1.9.2
 	github.com/charmbracelet/bubbles v0.20.0
 	github.com/charmbracelet/bubbletea v1.1.0

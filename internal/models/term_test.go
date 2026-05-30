@@ -59,6 +59,27 @@ func TestPrevTerm(t *testing.T) {
 	}
 }
 
+func TestLatestTerm(t *testing.T) {
+	cases := []struct {
+		name string
+		in   []string
+		want string
+	}{
+		{"picks max", []string{"202610", "202710", "202630"}, "202710"},
+		{"order independent", []string{"202710", "202610"}, "202710"},
+		{"skips malformed", []string{"bad", "202630", ""}, "202630"},
+		{"all invalid", []string{"bad", "12345"}, ""},
+		{"empty", nil, ""},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := LatestTerm(c.in); got != c.want {
+				t.Errorf("LatestTerm(%v) = %q, want %q", c.in, got, c.want)
+			}
+		})
+	}
+}
+
 func TestTermDisplayName(t *testing.T) {
 	cases := []struct {
 		in, want string

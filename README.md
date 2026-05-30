@@ -26,6 +26,24 @@ A Terminal User Interface for the Schedule Lookup service at Rose-Hulman Institu
 go run ./cmd/schedule-lookdown
 ```
 
+## Configuration
+
+The app reads optional settings from a local TOML file at
+`$XDG_CONFIG_HOME/schedule-lookdown/config.toml` (defaulting to
+`~/.config/schedule-lookdown/config.toml`). A commented file with the defaults
+below is created automatically on first run; edit it by hand to change behaviour.
+
+```toml
+# Which term the search form pre-selects.
+#   "current" - the term containing today's date
+#   "latest"  - the furthest-future term offered by reg-sched.pl
+default_term = "current"
+
+# When a course search returns exactly one result, jump straight to that
+# course's roster instead of showing a one-row table.
+jump_to_roster_on_single_result = false
+```
+
 ## Authentication
 
 The app authenticates against Rose-Hulman's Microsoft SAML login. How it does so depends on your platform.

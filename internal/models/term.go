@@ -92,6 +92,22 @@ func CurrentTerm(now time.Time) string {
 	}
 }
 
+// LatestTerm returns the furthest-future (largest) valid 6-digit term code from
+// codes, or "" if none are valid. Term codes are YYYYTT, so chronological order
+// matches numeric order and a lexicographic max over 6-digit strings suffices.
+func LatestTerm(codes []string) string {
+	latest := ""
+	for _, code := range codes {
+		if _, _, ok := parseTerm(code); !ok {
+			continue
+		}
+		if code > latest {
+			latest = code
+		}
+	}
+	return latest
+}
+
 // TermDisplayName converts a term code to a human-readable name.
 // Examples: "202630" → "Spring 2025-26", "202640" → "Summer 2026".
 // Unknown or malformed codes are returned as-is.

@@ -10,12 +10,16 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/luddenig/schedule-lookdown/internal/auth"
+	"github.com/luddenig/schedule-lookdown/internal/config"
 	"github.com/luddenig/schedule-lookdown/internal/ui"
 )
 
 func main() {
 	loadSamples := flag.Bool("load-samples", false, "load all sample response files from ./sample-responses/ instead of authenticating")
 	flag.Parse()
+
+	// Load user config; defaults are used (and a default file written) on first run.
+	cfg, _ := config.Load()
 
 	var session *auth.Session
 	initial := ui.ScreenLogin
@@ -32,7 +36,7 @@ func main() {
 	}
 
 	p := tea.NewProgram(
-		ui.NewApp(session, initial, fixtures),
+		ui.NewApp(session, cfg, initial, fixtures),
 		tea.WithAltScreen(),
 	)
 	if _, err := p.Run(); err != nil {

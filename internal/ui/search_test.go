@@ -17,7 +17,7 @@ func termFieldIndex(m searchModel) int {
 }
 
 func TestSearchTermSelectorStepKeys(t *testing.T) {
-	m := newSearchModelForQuery("course_search", "")
+	m := newSearchModelForQuery("course_search", "", "202610")
 	ti := termFieldIndex(m)
 	if ti != 0 {
 		t.Fatalf("term field index = %d, want 0", ti)
@@ -44,7 +44,7 @@ func TestSearchTermSelectorStepKeys(t *testing.T) {
 }
 
 func TestSearchSubmitEmitsTerm(t *testing.T) {
-	m := newSearchModelForQuery("schedule_lookup", "")
+	m := newSearchModelForQuery("schedule_lookup", "", "202630")
 	ti := termFieldIndex(m)
 	m.fields[ti].term = "202630"
 

@@ -81,6 +81,34 @@ func ParseTable(r io.Reader) ([]string, [][]string, error) {
 	return headers, rows, nil
 }
 
+// ParseTermOptions extracts the 6-digit term codes from reg-sched.pl's
+// <select name="termcode"> drop-down (present on the base form page). Codes are
+// returned in document order; non-numeric or non-6-digit option values are
+// skipped. Callers use models.LatestTerm to pick the furthest-future code.
+func ParseTermOptions(r io.Reader) ([]string, error) {
+	doc, err := goquery.NewDocumentFromReader(r)
+	if err != nil {
+		return nil, err
+	}
+
+	var codes []string
+	doc.Find("select[name='termcode'] option").Each(func(_ int, opt *goquery.Selection) {
+		val, ok := opt.Attr("value")
+		if !ok {
+			return
+		}
+		val = strings.TrimSpace(val)
+		if len(val) != 6 {
+			return
+		}
+		if _, err := strconv.Atoi(val); err != nil {
+			return
+		}
+		codes = append(codes, val)
+	})
+	return codes, nil
+}
+
 // ParseSections parses the schedule table from a reg-sched.pl response into
 // typed Section values. Column order matches the HTML:
 // Course, CRN, Course Title, Instructor, CrHrs, Enrl, Cap, Term Schedule,

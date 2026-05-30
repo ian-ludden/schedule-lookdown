@@ -2,8 +2,36 @@ package client
 
 import (
 	"os"
+	"strings"
 	"testing"
 )
+
+func TestParseTermOptions(t *testing.T) {
+	html := `<html><body>
+		<form>
+		<select name="termcode">
+			<option value="202710">Fall 2026-27</option>
+			<option value="202630" selected>Spring 2025-26</option>
+			<option value="">--</option>
+			<option value="bad">junk</option>
+		</select>
+		</form>
+	</body></html>`
+
+	codes, err := ParseTermOptions(strings.NewReader(html))
+	if err != nil {
+		t.Fatalf("ParseTermOptions: %v", err)
+	}
+	want := []string{"202710", "202630"}
+	if len(codes) != len(want) {
+		t.Fatalf("got %v, want %v", codes, want)
+	}
+	for i, c := range want {
+		if codes[i] != c {
+			t.Errorf("codes[%d] = %q, want %q", i, codes[i], c)
+		}
+	}
+}
 
 func TestParseUserInfo(t *testing.T) {
 	tests := []struct {
