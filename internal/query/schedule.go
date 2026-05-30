@@ -32,13 +32,11 @@ func (q *ScheduleLookup) Execute(ctx context.Context, c *client.Client) (Result,
 		return Result{}, err
 	}
 
-	// Parameters inferred from the example response HTML link patterns, e.g.:
-	// /regweb-cgi/reg-sched.pl?type=Instructor&termcode=202630&view=tgrid&id=luddenig
-	// The exact type value for a person schedule lookup needs verification.
 	params := url.Values{
+		"type":     {"Username"},
 		"termcode": {q.Term},
-		"id":       {q.Username},
 		"view":     {"tgrid"},
+		"id":       {q.Username},
 	}
 
 	resp, err := c.Get(ctx, params)
