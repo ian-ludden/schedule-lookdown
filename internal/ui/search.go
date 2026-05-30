@@ -1,14 +1,26 @@
 package ui
 
 import (
+	"time"
+
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/luddenig/schedule-lookdown/internal/models"
+)
+
+type fieldKind int
+
+const (
+	fieldText fieldKind = iota
+	fieldTerm
 )
 
 type field struct {
 	label string
 	key   string
-	input textinput.Model
+	kind  fieldKind
+	input textinput.Model // used when kind == fieldText
+	term  string          // YYYYTT code, used when kind == fieldTerm
 }
 
 type searchModel struct {
@@ -36,21 +48,23 @@ func fieldsForQuery(queryType string) []field {
 		return t
 	}
 
+	termField := field{label: "Term", key: "term", kind: fieldTerm, term: models.CurrentTerm(time.Now())}
+
 	switch queryType {
 	case "course_search":
 		return []field{
-			{label: "Term", key: "term", input: newInput("202710")},
+			termField,
 			{label: "Course Code", key: "course_code", input: newInput("CSSE 132")},
 			{label: "Instructor", key: "instructor", input: newInput("Last name")},
 		}
 	case "schedule_lookup":
 		return []field{
-			{label: "Term", key: "term", input: newInput("202710")},
+			termField,
 			{label: "Username", key: "username", input: newInput("RHIT username")},
 		}
 	case "roster_view":
 		return []field{
-			{label: "Term", key: "term", input: newInput("202710")},
+			termField,
 			{label: "Course ID", key: "course_id", input: newInput("CSSE474-02")},
 		}
 	}
@@ -61,15 +75,32 @@ func (m searchModel) Init() tea.Cmd {
 	if len(m.fields) == 0 {
 		return nil
 	}
-	return m.fields[0].input.Focus()
+	if m.fields[0].kind == fieldText {
+		return m.fields[0].input.Focus()
+	}
+	return nil
+}
+
+// blurFocused blurs the currently focused field's input, if it is a text field.
+func (m *searchModel) blurFocused() {
+	if m.fields[m.focused].kind == fieldText {
+		m.fields[m.focused].input.Blur()
+	}
+}
+
+// focusField sets focus to field i and returns a focus cmd if it is a text field.
+func (m *searchModel) focusField(i int) tea.Cmd {
+	m.focused = i
+	if m.fields[i].kind == fieldText {
+		return m.fields[i].input.Focus()
+	}
+	return nil
 }
 
 func (m searchModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if len(m.fields) == 0 {
 		return m, nil
 	}
-
-	var cmds []tea.Cmd
 
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
@@ -86,36 +117,48 @@ func (m searchModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m, nil
 		case "tab", "down":
-			m.fields[m.focused].input.Blur()
-			m.focused = (m.focused + 1) % len(m.fields)
-			cmds = append(cmds, m.fields[m.focused].input.Focus())
-			return m, tea.Batch(cmds...)
+			m.blurFocused()
+			return m, m.focusField((m.focused + 1) % len(m.fields))
 		case "shift+tab", "up":
-			m.fields[m.focused].input.Blur()
-			m.focused = (m.focused - 1 + len(m.fields)) % len(m.fields)
-			cmds = append(cmds, m.fields[m.focused].input.Focus())
-			return m, tea.Batch(cmds...)
+			m.blurFocused()
+			return m, m.focusField((m.focused - 1 + len(m.fields)) % len(m.fields))
 		case "enter":
 			if m.focused == len(m.fields)-1 {
 				return m, m.submitCmd()
 			}
-			m.fields[m.focused].input.Blur()
-			m.focused++
-			cmds = append(cmds, m.fields[m.focused].input.Focus())
-			return m, tea.Batch(cmds...)
+			m.blurFocused()
+			return m, m.focusField(m.focused + 1)
+		}
+
+		// Term selector: step through terms with h/l/←/→.
+		if m.fields[m.focused].kind == fieldTerm {
+			switch msg.String() {
+			case "h", "left":
+				m.fields[m.focused].term = models.PrevTerm(m.fields[m.focused].term)
+			case "l", "right":
+				m.fields[m.focused].term = models.NextTerm(m.fields[m.focused].term)
+			}
+			return m, nil
 		}
 	}
 
-	// Route all other messages to the focused input.
-	var cmd tea.Cmd
-	m.fields[m.focused].input, cmd = m.fields[m.focused].input.Update(msg)
-	return m, cmd
+	// Route all other messages to the focused text input.
+	if m.fields[m.focused].kind == fieldText {
+		var cmd tea.Cmd
+		m.fields[m.focused].input, cmd = m.fields[m.focused].input.Update(msg)
+		return m, cmd
+	}
+	return m, nil
 }
 
 func (m searchModel) submitCmd() tea.Cmd {
 	params := make(map[string]string, len(m.fields))
 	for _, f := range m.fields {
-		params[f.key] = f.input.Value()
+		if f.kind == fieldTerm {
+			params[f.key] = f.term
+		} else {
+			params[f.key] = f.input.Value()
+		}
 	}
 	return func() tea.Msg {
 		return searchSubmittedMsg{queryType: m.queryType, params: params}
@@ -126,13 +169,25 @@ func (m searchModel) View() string {
 	s := titleStyle.Render("Schedule Lookdown") + "\n"
 	s += subtitleStyle.Render(queryDisplayName(m.queryType)) + "\n\n"
 	for i, f := range m.fields {
+		focused := i == m.focused
 		label := normalStyle.Render(f.label + ": ")
-		if i == m.focused {
+		if focused {
 			label = selectedStyle.Render(f.label + ": ")
 		}
-		s += label + f.input.View() + "\n"
+		var val string
+		if f.kind == fieldTerm {
+			name := models.TermDisplayName(f.term)
+			if focused {
+				val = selectedStyle.Render("‹ " + name + " ›")
+			} else {
+				val = normalStyle.Render(name)
+			}
+		} else {
+			val = f.input.View()
+		}
+		s += label + val + "\n"
 	}
-	help := "tab/↑↓ navigate • enter submit • esc back"
+	help := "tab/↑↓ navigate • h/l/←/→ change term • enter submit • esc back"
 	if m.storedUsername != "" && m.queryType == "schedule_lookup" {
 		help += " • ^ fill my username"
 	}

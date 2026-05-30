@@ -1,6 +1,27 @@
 package models
 
-import "testing"
+import (
+	"testing"
+	"time"
+)
+
+func TestCurrentTerm(t *testing.T) {
+	cases := []struct {
+		date time.Time
+		want string
+	}{
+		{time.Date(2026, time.May, 30, 0, 0, 0, 0, time.UTC), "202630"},   // Spring 2025-26
+		{time.Date(2026, time.September, 1, 0, 0, 0, 0, time.UTC), "202710"}, // Fall 2026-27
+		{time.Date(2025, time.December, 15, 0, 0, 0, 0, time.UTC), "202620"}, // Winter 2025-26 (Dec)
+		{time.Date(2026, time.January, 10, 0, 0, 0, 0, time.UTC), "202620"},  // Winter 2025-26 (Jan)
+		{time.Date(2026, time.July, 4, 0, 0, 0, 0, time.UTC), "202640"},      // Summer 2026
+	}
+	for _, c := range cases {
+		if got := CurrentTerm(c.date); got != c.want {
+			t.Errorf("CurrentTerm(%s) = %q, want %q", c.date.Format("2006-01-02"), got, c.want)
+		}
+	}
+}
 
 func TestNextTerm(t *testing.T) {
 	cases := []struct {

@@ -3,6 +3,7 @@ package models
 import (
 	"fmt"
 	"strconv"
+	"time"
 )
 
 // RHIT quarter sequence within an academic year (10=Fall, 20=Winter, 30=Spring, 40=Summer).
@@ -70,6 +71,25 @@ func PrevTerm(code string) string {
 		year--
 	}
 	return fmt.Sprintf("%04d%02d", year, termSequence[prev])
+}
+
+// CurrentTerm returns the term code for the academic quarter containing now,
+// using RHIT's standard calendar (Sep-Nov=Fall, Dec-Feb=Winter, Mar-May=Spring,
+// Jun-Aug=Summer). The year digit is the academic-year-end year.
+func CurrentTerm(now time.Time) string {
+	year := now.Year()
+	switch now.Month() {
+	case time.September, time.October, time.November:
+		return fmt.Sprintf("%04d%02d", year+1, 10) // Fall, AY end = year+1
+	case time.December:
+		return fmt.Sprintf("%04d%02d", year+1, 20) // Winter, AY end = year+1
+	case time.January, time.February:
+		return fmt.Sprintf("%04d%02d", year, 20) // Winter, AY end = year
+	case time.March, time.April, time.May:
+		return fmt.Sprintf("%04d%02d", year, 30) // Spring
+	default: // June, July, August
+		return fmt.Sprintf("%04d%02d", year, 40) // Summer
+	}
 }
 
 // TermDisplayName converts a term code to a human-readable name.
