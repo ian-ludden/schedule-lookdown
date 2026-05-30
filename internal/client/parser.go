@@ -10,9 +10,10 @@ import (
 )
 
 // ParseUserInfo extracts key-value metadata from a reg-sched.pl student
-// schedule response. The user-info table has a single <td> with all student
-// fields as <br>-separated text (goquery's Text() concatenates them without
-// newlines), e.g. "Name: Nandini  BregginAdvisor: Ian  Ludden".
+// schedule response. The user-info table has a single <td> with fields as
+// <br>-separated text. Each text node between <br> tags holds one field
+// (e.g. "Advisor: Ian  Ludden"). We inspect text nodes individually so that
+// fields after "Advisor:" (e.g. "Phone: ...") are not included in the name.
 // Returns a map with "advisor_name" set to the advisor's full name when found.
 func ParseUserInfo(r io.Reader) (map[string]string, error) {
 	doc, err := goquery.NewDocumentFromReader(r)
@@ -24,15 +25,19 @@ func ParseUserInfo(r io.Reader) (map[string]string, error) {
 		if meta["advisor_name"] != "" {
 			return
 		}
-		text := cell.Text()
-		idx := strings.Index(strings.ToLower(text), "advisor:")
-		if idx < 0 {
-			return
-		}
-		name := strings.Join(strings.Fields(text[idx+len("advisor:"):]), " ")
-		if name != "" {
-			meta["advisor_name"] = name
-		}
+		cell.Contents().Each(func(_ int, node *goquery.Selection) {
+			if meta["advisor_name"] != "" || goquery.NodeName(node) != "#text" {
+				return
+			}
+			text := strings.TrimSpace(node.Text())
+			if !strings.HasPrefix(strings.ToLower(text), "advisor:") {
+				return
+			}
+			name := strings.Join(strings.Fields(text[len("advisor:"):]), " ")
+			if name != "" {
+				meta["advisor_name"] = name
+			}
+		})
 	})
 	return meta, nil
 }
