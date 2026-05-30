@@ -435,24 +435,16 @@ func executeQueryCmd(session *auth.Session, queryType string, params map[string]
 	return func() tea.Msg {
 		var c *client.Client
 		var err error
-		if fixtures != nil {
-			key := queryType + ":" + params["term"]
-			path, ok := fixtures[key]
-			if !ok {
-				path, ok = fixtures[queryType]
-			}
-			if !ok {
-				return errMsg{fmt.Errorf("no sample fixture available for query type: %s", queryType)}
-			}
-			c, err = client.NewFixture(path)
-		} else {
-			if session == nil {
-				return errMsg{fmt.Errorf("no active session")}
-			}
-			c, err = client.New(session.Cookies)
-		}
+
+		key := queryType + ":" + params["term"]
+		c, err = newClient(session, fixtures, key)
 		if err != nil {
-			return errMsg{err}
+			if fixtures != nil {
+				c, err = newClient(session, fixtures, queryType)
+			}
+			if err != nil {
+				return errMsg{err}
+			}
 		}
 
 		var q query.Query
@@ -568,21 +560,11 @@ func advisorSearchCmd(session *auth.Session, advisorName, term string, fixtures 
 		lastName := parts[len(parts)-1]
 		firstName := strings.Join(parts[:len(parts)-1], " ")
 
+		key := "person_search"
 		var c *client.Client
 		var err error
-		if fixtures != nil {
-			key := "person_search"
-			path, ok := fixtures[key]
-			if !ok {
-				return errMsg{fmt.Errorf("no fixture available for person_search")}
-			}
-			c, err = client.NewFixture(path)
-		} else {
-			if session == nil {
-				return errMsg{fmt.Errorf("no active session")}
-			}
-			c, err = client.New(session.Cookies)
-		}
+
+		c, err = newClient(session, fixtures, key)
 		if err != nil {
 			return errMsg{err}
 		}
@@ -620,6 +602,29 @@ func advisorSearchCmd(session *auth.Session, advisorName, term string, fixtures 
 			}
 		}
 	}
+}
+
+// newClient creates a client backed by a live session or a fixture file.
+func newClient(session *auth.Session, fixtures map[string]string, fixtureKey string) (*client.Client, error) {
+	var c *client.Client
+	var err error
+	if fixtures != nil {
+		path, ok := fixtures[fixtureKey]
+		if !ok {
+			return c, fmt.Errorf("no fixture available for %s", fixtureKey)
+		}
+		c, err = client.NewFixture(path)
+	} else {
+		if session == nil {
+			return c, fmt.Errorf("no active session")
+		}
+		c, err = client.New(session.Cookies)
+	}
+	if err != nil {
+		return c, err
+	}
+
+	return c, nil
 }
 
 // isCredentialError reports whether err is Microsoft rejecting the account or
