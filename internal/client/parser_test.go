@@ -18,7 +18,7 @@ func TestParseUserInfoAdvisor(t *testing.T) {
 	}
 
 	got := meta["advisor_name"]
-	const want = "Ian Ludden"
+	const want = "Robin Vale"
 	if got != want {
 		t.Errorf("advisor_name = %q, want %q", got, want)
 	}

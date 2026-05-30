@@ -11,7 +11,7 @@ type usernameModel struct {
 
 func newUsernameModel() usernameModel {
 	t := textinput.New()
-	t.Placeholder = "RHIT username (e.g. luddenig)"
+	t.Placeholder = "RHIT username (e.g. valer)"
 	t.Width = 40
 	t.CharLimit = 64
 	t.Focus()

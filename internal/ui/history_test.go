@@ -206,7 +206,7 @@ func TestHistoryEntryLabel_AllQueryTypes(t *testing.T) {
 			"Course:",
 		},
 		{
-			makeEntry("schedule_lookup", map[string]string{"username": "luddenig", "term": "202630"}, t0),
+			makeEntry("schedule_lookup", map[string]string{"username": "valer", "term": "202630"}, t0),
 			"Sched:",
 		},
 		{
