@@ -1,6 +1,8 @@
 package ui
 
 import (
+	"strings"
+
 	"github.com/charmbracelet/bubbles/spinner"
 	"github.com/charmbracelet/bubbles/table"
 	tea "github.com/charmbracelet/bubbletea"
@@ -218,7 +220,7 @@ func (m resultsModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			}
 		case "r":
-			if m.queryType == "instructor_lookup" || m.queryType == "schedule_lookup" {
+			if m.queryType == "instructor_lookup" || m.queryType == "schedule_lookup" || m.queryType == "course_search" {
 				row := m.table.SelectedRow()
 				if len(row) > 0 && row[0] != "" {
 					courseID, term := row[0], m.params["term"]
@@ -226,6 +228,24 @@ func (m resultsModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						return searchSubmittedMsg{
 							queryType: "roster_view",
 							params:    map[string]string{"term": term, "course_id": courseID},
+						}
+					}
+				}
+			}
+		case "i":
+			if m.queryType == "course_search" {
+				row := m.table.SelectedRow()
+				if len(row) > 3 && row[3] != "" {
+					term := m.params["term"]
+					if start := strings.LastIndex(row[3], "("); start != -1 {
+						if end := strings.LastIndex(row[3], ")"); end > start {
+							username := row[3][start+1 : end]
+							return m, func() tea.Msg {
+								return searchSubmittedMsg{
+									queryType: "instructor_lookup",
+									params:    map[string]string{"term": term, "username": username},
+								}
+							}
 						}
 					}
 				}
@@ -306,6 +326,8 @@ func (m resultsModel) View() string {
 	switch m.queryType {
 	case "roster_view":
 		help += " • enter: view schedule • a: view advisor schedule"
+	case "course_search":
+		help += " • r: view roster • i: view instructor schedule"
 	case "instructor_lookup":
 		help += " • r: view roster"
 	case "schedule_lookup":
