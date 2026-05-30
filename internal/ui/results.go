@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"fmt"
 	"strings"
 
 	"github.com/charmbracelet/bubbles/spinner"
@@ -28,6 +29,7 @@ const outerBorderWidth = 2
 
 const minColWidth = 3
 const defaultColWidth = 15
+const defaultPriority = 2
 
 var preferredWidths = map[string]int{
 	"Course":              11,
@@ -39,7 +41,7 @@ var preferredWidths = map[string]int{
 	"Cap":                 5,
 	"Term Schedule":       20,
 	"Comments":            25,
-	"Final Exam Schedule": 30,
+	"Final Exam Schedule": 20,
 	"Term Dates":          11,
 	"USERNAME":            12,
 	"NAME":                25,
@@ -51,16 +53,29 @@ var preferredWidths = map[string]int{
 	"EMAIL":               30,
 }
 
+// columnPriority controls which columns absorb width compression first.
+// 3 = HIGH (protected; only scaled as a last resort)
+// 2 = MEDIUM (scaled after LOW is exhausted)
+// 1 = LOW (scaled first)
+var columnPriority = map[string]int{
+	"Course": 3, "CRN": 3, "USERNAME": 3,
+	"Course Title": 3, "Instructor": 3, "Term Schedule": 3, "NAME": 3, "MAJOR": 3,
+	"CrHrs": 2, "Enrl": 2, "Cap": 2, "CLASS": 2, "YEAR": 2,
+	"Comments": 1, "Final Exam Schedule": 1, "Term Dates": 1,
+	"BANNER ID": 1, "ADVISOR": 1, "EMAIL": 1,
+}
+
 type resultsModel struct {
-	table     table.Model
-	result    query.Result
-	queryType string
-	params    map[string]string
-	err       error
-	spinner   spinner.Model
-	loading   bool
-	width     int
-	height    int
+	table      table.Model
+	result     query.Result
+	queryType  string
+	params     map[string]string
+	err        error
+	spinner    spinner.Model
+	loading    bool
+	showDetail bool
+	width      int
+	height     int
 }
 
 func newResultsModel() resultsModel {
@@ -141,12 +156,76 @@ func computeColWidths(cols []string, termWidth int) map[string]int {
 		return widths
 	}
 
-	for k, w := range widths {
-		scaled := int(float64(w) * float64(available) / float64(totalPreferred))
-		if scaled < minColWidth {
-			scaled = minColWidth
+	// Partition columns by priority tier.
+	var highCols, medCols, lowCols []string
+	sumHigh, sumMed := 0, 0
+	for _, c := range cols {
+		p := columnPriority[c]
+		if p == 0 {
+			p = defaultPriority
 		}
-		widths[k] = scaled
+		switch {
+		case p >= 3:
+			highCols = append(highCols, c)
+			sumHigh += widths[c]
+		case p == 2:
+			medCols = append(medCols, c)
+			sumMed += widths[c]
+		default:
+			lowCols = append(lowCols, c)
+		}
+	}
+
+	lowMin := len(lowCols) * minColWidth
+	remainAfterLow := available - lowMin
+
+	switch {
+	case remainAfterLow >= sumHigh+sumMed:
+		// HIGH + MEDIUM fit at preferred; distribute surplus to LOW proportionally.
+		surplus := remainAfterLow - sumHigh - sumMed
+		sumLow := 0
+		for _, c := range lowCols {
+			sumLow += widths[c]
+		}
+		for _, c := range lowCols {
+			extra := 0
+			if sumLow > 0 {
+				extra = int(float64(widths[c]) * float64(surplus) / float64(sumLow))
+			}
+			widths[c] = minColWidth + extra
+		}
+		// HIGH and MEDIUM stay at preferred (already set).
+
+	case remainAfterLow >= sumHigh:
+		// HIGH fits at preferred; scale MEDIUM into remainder; LOW gets minimum.
+		for _, c := range lowCols {
+			widths[c] = minColWidth
+		}
+		medAvail := remainAfterLow - sumHigh
+		for _, c := range medCols {
+			scaled := int(float64(widths[c]) * float64(medAvail) / float64(sumMed))
+			if scaled < minColWidth {
+				scaled = minColWidth
+			}
+			widths[c] = scaled
+		}
+		// HIGH stays at preferred.
+
+	default:
+		// Even HIGH doesn't fit; scale HIGH proportionally; LOW and MEDIUM get minimum.
+		for _, c := range lowCols {
+			widths[c] = minColWidth
+		}
+		for _, c := range medCols {
+			widths[c] = minColWidth
+		}
+		for _, c := range highCols {
+			scaled := int(float64(widths[c]) * float64(remainAfterLow) / float64(sumHigh))
+			if scaled < minColWidth {
+				scaled = minColWidth
+			}
+			widths[c] = scaled
+		}
 	}
 	return widths
 }
@@ -168,6 +247,13 @@ func (m resultsModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	case tea.KeyMsg:
+		if m.showDetail {
+			switch msg.String() {
+			case "d", "esc", "q":
+				m.showDetail = false
+			}
+			return m, nil
+		}
 		switch msg.String() {
 		case "esc", "q":
 			return m, func() tea.Msg { return backMsg{} }
@@ -255,6 +341,11 @@ func (m resultsModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, func() tea.Msg {
 				return refreshCurrentQueryMsg{queryType: qt, params: params}
 			}
+		case "d":
+			if len(m.result.Columns) > 0 && len(m.table.SelectedRow()) > 0 {
+				m.showDetail = true
+				return m, nil
+			}
 		}
 	case spinner.TickMsg:
 		if m.loading {
@@ -322,7 +413,20 @@ func (m resultsModel) View() string {
 	if term := m.params["term"]; term != "" {
 		title += " — " + models.TermDisplayName(term)
 	}
-	help := "↑/↓ navigate • h/l prev/next term • ctrl+r refresh • esc/q back"
+
+	if m.loading {
+		return titleStyle.Render("Loading...") + "\n\n" +
+			m.spinner.View() + " Retrieving results..." + "\n\n" +
+			helpStyle.Render("esc/q back")
+	}
+
+	if m.showDetail {
+		return titleStyle.Render(title) + "\n" +
+			resultsBaseStyle.Render(m.renderDetail()) +
+			"\n" + helpStyle.Render("d/esc: close detail")
+	}
+
+	help := "↑/↓ navigate • h/l prev/next term • d: detail • ctrl+r refresh • esc/q back"
 	switch m.queryType {
 	case "roster_view":
 		help += " • enter: view schedule • a: view advisor schedule"
@@ -336,18 +440,37 @@ func (m resultsModel) View() string {
 			help += " • a: view advisor schedule"
 		}
 	case "person_search":
-		help = "↑/↓ navigate • enter: view advisor schedule • ctrl+r refresh • esc/q back"
-	}
-
-	if m.loading {
-		return titleStyle.Render("Loading...") + "\n\n" +
-			m.spinner.View() + " Retrieving results..." + "\n\n" +
-			helpStyle.Render("esc/q back")
+		help = "↑/↓ navigate • d: detail • enter: view advisor schedule • ctrl+r refresh • esc/q back"
 	}
 
 	return titleStyle.Render(title) + "\n" +
 		resultsBaseStyle.Render(m.table.View()) +
 		"\n" + helpStyle.Render(help)
+}
+
+// renderDetail returns a string with all columns and their values for the
+// selected row, formatted as padded label: value pairs.
+func (m resultsModel) renderDetail() string {
+	row := m.table.SelectedRow()
+	cols := m.result.Columns
+
+	labelWidth := 0
+	for _, c := range cols {
+		if len(c) > labelWidth {
+			labelWidth = len(c)
+		}
+	}
+
+	var sb strings.Builder
+	sb.WriteString("\n")
+	for i, c := range cols {
+		val := ""
+		if i < len(row) {
+			val = row[i]
+		}
+		fmt.Fprintf(&sb, "  %-*s  %s\n", labelWidth, c, val)
+	}
+	return sb.String()
 }
 
 var _ tea.Model = resultsModel{}
