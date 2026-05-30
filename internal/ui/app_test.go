@@ -132,14 +132,21 @@ func TestAppTermNavIntegration(t *testing.T) {
 		t.Errorf("changeTermMsg.term = %q, want 202620", ct.term)
 	}
 
-	// Step 2: changeTermMsg → should produce queryResultMsg (or errMsg).
-	app3, msg2 := driveUpdate(app2, ct)
-	qr, ok := msg2.(queryResultMsg)
-	if !ok {
-		if em, isErr := msg2.(errMsg); isErr {
+	// Step 2: changeTermMsg → loading state with spinner; batch also contains executeQueryCmd.
+	model3, cmd2 := app2.Update(ct)
+	app3 := model3.(App)
+	if !app3.results.loading {
+		t.Error("expected results.loading to be true after changeTermMsg")
+	}
+
+	var qr queryResultMsg
+	for _, m := range collectMsgs(cmd2) {
+		if q, ok := m.(queryResultMsg); ok {
+			qr = q
+		}
+		if em, isErr := m.(errMsg); isErr {
 			t.Fatalf("changeTermMsg produced errMsg: %v", em.err)
 		}
-		t.Fatalf("changeTermMsg produced %T (%v), want queryResultMsg", msg2, msg2)
 	}
 	if qr.params["term"] != "202620" {
 		t.Errorf("queryResultMsg.params[term] = %q, want 202620", qr.params["term"])
