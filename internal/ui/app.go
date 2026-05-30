@@ -259,12 +259,12 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case searchSubmittedMsg:
 		a.results = newResultsModel()
 		a.screen = ScreenResults
-		return a, executeQueryCmd(a.session, msg.queryType, msg.params, a.fixtures)
+		return a, tea.Batch(a.results.Init(), executeQueryCmd(a.session, msg.queryType, msg.params, a.fixtures))
 
 	case advisorSearchMsg:
 		a.results = newResultsModel()
 		a.screen = ScreenResults
-		return a, advisorSearchCmd(a.session, msg.advisorName, msg.term, a.fixtures)
+		return a, tea.Batch(a.results.Init(), advisorSearchCmd(a.session, msg.advisorName, msg.term, a.fixtures))
 
 	case queryResultMsg:
 		a.results = newResultsModelWithData(msg.result, msg.queryType, msg.params, a.mainWidth(), a.height)
@@ -297,7 +297,7 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return a, nil
 
 	case refreshCurrentQueryMsg:
-		return a, executeQueryCmd(a.session, msg.queryType, msg.params, a.fixtures)
+		return a, tea.Batch(a.results.Init(), executeQueryCmd(a.session, msg.queryType, msg.params, a.fixtures))
 
 	case changeTermMsg:
 		queryType := a.results.queryType
