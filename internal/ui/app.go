@@ -297,6 +297,9 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return a, nil
 
 	case refreshCurrentQueryMsg:
+		a.results = newResultsModel()
+		a.results.width = a.mainWidth()
+		a.results.height = a.height
 		return a, tea.Batch(a.results.Init(), executeQueryCmd(a.session, msg.queryType, msg.params, a.fixtures))
 
 	case changeTermMsg:
@@ -306,10 +309,11 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			newParams[k] = v
 		}
 		newParams["term"] = msg.term
-		// Show the new term in the title immediately while the query loads.
-		a.results = resultsModel{queryType: queryType, params: newParams, width: a.mainWidth(), height: a.height}
+		a.results = newResultsModel()
+		a.results.width = a.mainWidth()
+		a.results.height = a.height
 		a.screen = ScreenResults
-		return a, executeQueryCmd(a.session, queryType, newParams, a.fixtures)
+		return a, tea.Batch(a.results.Init(), executeQueryCmd(a.session, queryType, newParams, a.fixtures))
 
 	case backMsg:
 		a.screen = ScreenMenu
