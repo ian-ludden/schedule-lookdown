@@ -1,9 +1,12 @@
 package query
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"io"
 	"net/url"
+	"strconv"
 
 	"github.com/luddenig/schedule-lookdown/internal/client"
 )
@@ -40,9 +43,34 @@ func (q *RosterView) Execute(ctx context.Context, c *client.Client) (Result, err
 	}
 	defer resp.Body.Close()
 
-	cols, rows, err := client.ParseRoster(resp.Body)
+	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return Result{}, err
 	}
-	return Result{Columns: cols, Rows: rows}, nil
+
+	cols, rows, err := client.ParseRoster(bytes.NewReader(body))
+	if err != nil {
+		return Result{}, err
+	}
+
+	// Build a metadata header from the section-detail table (first BORDER=1
+	// table) and the user-info table's "Course ID".
+	meta, _ := client.ParseUserInfo(bytes.NewReader(body))
+	if meta == nil {
+		meta = map[string]string{}
+	}
+	if sections, err := client.ParseSections(bytes.NewReader(body)); err == nil && len(sections) > 0 {
+		s := sections[0]
+		meta["crn"] = s.CRN
+		meta["title"] = s.Title
+		meta["instructor"] = s.Instructor
+		meta["credits"] = strconv.Itoa(s.Credits)
+		meta["enrolled"] = strconv.Itoa(s.Enrolled)
+		meta["capacity"] = strconv.Itoa(s.Capacity)
+		meta["schedule"] = s.Schedule
+		meta["comments"] = s.Comments
+		meta["final_exam"] = s.FinalExam
+	}
+
+	return Result{Columns: cols, Rows: rows, Metadata: meta}, nil
 }

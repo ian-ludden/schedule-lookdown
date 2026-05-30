@@ -9,35 +9,43 @@ import (
 	"github.com/luddenig/schedule-lookdown/internal/models"
 )
 
-// ParseUserInfo extracts key-value metadata from a reg-sched.pl student
-// schedule response. The user-info table has a single <td> with fields as
-// <br>-separated text. Each text node between <br> tags holds one field
-// (e.g. "Advisor: Ian  Ludden"). We inspect text nodes individually so that
-// fields after "Advisor:" (e.g. "Phone: ...") are not included in the name.
-// Returns a map with "advisor_name" set to the advisor's full name when found.
+// ParseUserInfo extracts key-value metadata from the user-info table of a
+// reg-sched.pl response. The fields live in a single <td class="bw80"> as
+// <br>-separated text (e.g. "Name: Alex Quinn", "Banner ID: 800500002",
+// "Advisor: Robin Vale"). We inspect text nodes individually so each
+// "Label: value" pair is captured independently.
+//
+// Keys are the label lower-cased with spaces replaced by underscores
+// (e.g. "Banner ID" -> "banner_id"), except "Advisor" which is stored as
+// "advisor_name" for backward compatibility. Whitespace in values is collapsed
+// and empty values (e.g. faculty Room/Phone rendered as &nbsp) are skipped.
 func ParseUserInfo(r io.Reader) (map[string]string, error) {
 	doc, err := goquery.NewDocumentFromReader(r)
 	if err != nil {
 		return nil, err
 	}
 	meta := map[string]string{}
-	doc.Find("td").Each(func(_ int, cell *goquery.Selection) {
-		if meta["advisor_name"] != "" {
+	cell := doc.Find("td.bw80").First()
+	cell.Contents().Each(func(_ int, node *goquery.Selection) {
+		if goquery.NodeName(node) != "#text" {
 			return
 		}
-		cell.Contents().Each(func(_ int, node *goquery.Selection) {
-			if meta["advisor_name"] != "" || goquery.NodeName(node) != "#text" {
-				return
-			}
-			text := strings.TrimSpace(node.Text())
-			if !strings.HasPrefix(strings.ToLower(text), "advisor:") {
-				return
-			}
-			name := strings.Join(strings.Fields(text[len("advisor:"):]), " ")
-			if name != "" {
-				meta["advisor_name"] = name
-			}
-		})
+		text := strings.TrimSpace(node.Text())
+		label, value, ok := strings.Cut(text, ":")
+		if !ok {
+			return
+		}
+		value = strings.Join(strings.Fields(value), " ")
+		if value == "" {
+			return
+		}
+		key := strings.ReplaceAll(strings.ToLower(strings.TrimSpace(label)), " ", "_")
+		if key == "advisor" {
+			key = "advisor_name"
+		}
+		if _, exists := meta[key]; !exists {
+			meta[key] = value
+		}
 	})
 	return meta, nil
 }

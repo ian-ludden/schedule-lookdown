@@ -70,6 +70,7 @@ type resultsModel struct {
 	result     query.Result
 	queryType  string
 	params     map[string]string
+	meta       string // styled metadata header rendered above the table
 	err        error
 	spinner    spinner.Model
 	loading    bool
@@ -87,12 +88,23 @@ func newResultsModel() resultsModel {
 
 func newResultsModelWithData(result query.Result, queryType string, params map[string]string, width, height int) resultsModel {
 	m := resultsModel{result: result, queryType: queryType, params: params, width: width, height: height}
-	m.table = buildResultsTable(result, width, height)
+	m.meta = renderMetadataBlock(queryType, result, params, width)
+	m.table = buildResultsTable(result, width, height, metaReservedLines(m.meta))
 	return m
 }
 
-// buildResultsTable creates a table.Model sized to fit within width × height.
-func buildResultsTable(result query.Result, width, height int) table.Model {
+// metaReservedLines is the number of vertical lines the metadata header (and its
+// trailing blank line) occupies, for sizing the table beneath it.
+func metaReservedLines(meta string) int {
+	if meta == "" {
+		return 0
+	}
+	return lipgloss.Height(meta)
+}
+
+// buildResultsTable creates a table.Model sized to fit within width × height,
+// reserving `reserved` lines for a metadata header above the table.
+func buildResultsTable(result query.Result, width, height, reserved int) table.Model {
 	colWidthMap := computeColWidths(result.Columns, width)
 
 	cols := make([]table.Column, len(result.Columns))
@@ -105,7 +117,7 @@ func buildResultsTable(result query.Result, width, height int) table.Model {
 		rows[i] = table.Row(r)
 	}
 
-	tableHeight := max(1, height-resultsOverheadLines)
+	tableHeight := max(1, height-resultsOverheadLines-reserved)
 
 	t := table.New(
 		table.WithColumns(cols),
@@ -243,7 +255,8 @@ func (m resultsModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.width = msg.Width
 		m.height = msg.Height
 		if len(m.result.Columns) > 0 {
-			m.table = buildResultsTable(m.result, m.width, m.height)
+			m.meta = renderMetadataBlock(m.queryType, m.result, m.params, m.width)
+			m.table = buildResultsTable(m.result, m.width, m.height, metaReservedLines(m.meta))
 		}
 		return m, nil
 	case tea.KeyMsg:
@@ -362,6 +375,82 @@ func (m resultsModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, cmd
 }
 
+// renderMetadataBlock returns the styled, width-wrapped metadata header for the
+// current result, or "" when there is nothing to show.
+func renderMetadataBlock(queryType string, result query.Result, params map[string]string, width int) string {
+	content := metadataContent(queryType, result, params)
+	if content == "" {
+		return ""
+	}
+	style := subtitleStyle
+	if width > 0 {
+		style = style.Width(width)
+	}
+	return style.Render(content)
+}
+
+// metadataContent builds the "Label: value" summary line for a result, joined by
+// " │ ". Returns "" when no metadata applies to the query type.
+func metadataContent(queryType string, result query.Result, params map[string]string) string {
+	meta := result.Metadata
+	var parts []string
+	add := func(label, value string) {
+		if value != "" {
+			parts = append(parts, label+": "+value)
+		}
+	}
+
+	switch queryType {
+	case "schedule_lookup", "instructor_lookup":
+		add("Name", meta["name"])
+		add("Banner ID", meta["banner_id"])
+		if meta["dept"] != "" {
+			add("Dept", meta["dept"])
+		} else {
+			add("Major", meta["major"])
+			add("Year", meta["year"])
+			add("Advisor", meta["advisor_name"])
+		}
+	case "roster_view":
+		add("Title", meta["title"])
+		add("CRN", meta["crn"])
+		add("Instructor", meta["instructor"])
+		add("CrHrs", meta["credits"])
+		add("Enrl", meta["enrolled"])
+		add("Cap", meta["capacity"])
+		add("Schedule", meta["schedule"])
+		add("Comments", meta["comments"])
+		add("Final Exam", meta["final_exam"])
+	case "course_search":
+		term := params["course_code"]
+		if term == "" {
+			term = params["instructor"]
+		}
+		summary := pluralize(len(result.Rows), "result", "results")
+		if term != "" {
+			summary = term + " · " + summary
+		}
+		return summary
+	case "person_search":
+		summary := pluralize(len(result.Rows), "match", "matches")
+		if ln := params["last_name"]; ln != "" {
+			summary = ln + "* · " + summary
+		}
+		return summary
+	}
+
+	return strings.Join(parts, " │ ")
+}
+
+// pluralize renders a count with the singular or plural noun, e.g. "1 result"
+// or "3 results".
+func pluralize(n int, singular, plural string) string {
+	if n == 1 {
+		return fmt.Sprintf("1 %s", singular)
+	}
+	return fmt.Sprintf("%d %s", n, plural)
+}
+
 func queryResultTitle(queryType string, params map[string]string) string {
 	switch queryType {
 	case "schedule_lookup":
@@ -443,7 +532,11 @@ func (m resultsModel) View() string {
 		help = "↑/↓ navigate • d: detail • enter: view advisor schedule • ctrl+r refresh • esc/q back"
 	}
 
-	return titleStyle.Render(title) + "\n" +
+	header := titleStyle.Render(title) + "\n"
+	if m.meta != "" {
+		header += m.meta + "\n"
+	}
+	return header +
 		resultsBaseStyle.Render(m.table.View()) +
 		"\n" + helpStyle.Render(help)
 }
