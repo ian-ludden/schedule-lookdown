@@ -154,13 +154,15 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case authSuccessMsg:
 		a.session = msg.session
-		stored, err := auth.RetrieveUsername()
-		if err != nil {
-			a.usernamePrompt = newUsernameModel()
-			a.screen = ScreenUsername
-			return a, a.usernamePrompt.Init()
+		if a.storedUsername == "" {
+			stored, err := auth.RetrieveUsername()
+			if err != nil {
+				a.usernamePrompt = newUsernameModel()
+				a.screen = ScreenUsername
+				return a, a.usernamePrompt.Init()
+			}
+			a.storedUsername = stored
 		}
-		a.storedUsername = stored
 		a.screen = ScreenMenu
 		a.applyWindowSizeToMenu()
 		return a, a.menu.Init()

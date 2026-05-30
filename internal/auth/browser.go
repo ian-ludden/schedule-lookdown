@@ -255,6 +255,13 @@ func AuthenticateHeadless(ctx context.Context, username, password string, status
 		return nil, fmt.Errorf("find free port: %w", err)
 	}
 
+	// Isolated profile dir prevents a singleton conflict with any running
+	// Chrome and keeps this instance away from the user's normal profile.
+	tmpDir, err := os.MkdirTemp("", "schedule-lookdown-chrome-")
+	if err != nil {
+		return nil, fmt.Errorf("create chrome temp dir: %w", err)
+	}
+
 	cmd := exec.CommandContext(ctx, browserPath,
 		"--headless=new",
 		"--no-sandbox",
@@ -262,15 +269,25 @@ func AuthenticateHeadless(ctx context.Context, username, password string, status
 		"--no-first-run",
 		"--no-default-browser-check",
 		fmt.Sprintf("--remote-debugging-port=%d", port),
+		fmt.Sprintf("--user-data-dir=%s", tmpDir),
+		// Prevent Chrome from trying to unlock the GNOME keyring (or any
+		// other libsecret backend). On Ubuntu/WSL2 with gnome-keyring
+		// installed, Chrome 130+ attempts to unlock it on startup and
+		// blocks on a GUI dialog until it's dismissed.
+		"--password-store=basic",
 		// Force a Linux Chrome UA. Without this, WSL2's kernel fingerprint can
 		// make Microsoft identify the browser as Windows Edge and attempt Desktop
 		// SSO (DSSO/Kerberos), which fails headlessly and breaks the redirect chain.
 		"--user-agent=Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36",
 	)
 	if err := cmd.Start(); err != nil {
+		_ = os.RemoveAll(tmpDir)
 		return nil, fmt.Errorf("start headless Chrome: %w", err)
 	}
-	defer cmd.Process.Kill()
+	defer func() {
+		cmd.Process.Kill()
+		os.RemoveAll(tmpDir)
+	}()
 
 	// Both Chrome and chromedp are in WSL2 — plain localhost works.
 	wsURL, err := waitForDebugger(ctx, port)
