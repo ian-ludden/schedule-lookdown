@@ -26,15 +26,18 @@ type searchModel struct {
 	fields         []field
 	focused        int
 	storedUsername string
+	latestTerm     string // furthest-future available term; "" means no upper bound
+	termWarning    string // transient message shown when forward nav is blocked
 }
 
 func newSearchModel() searchModel { return searchModel{} }
 
-func newSearchModelForQuery(queryType string, storedUsername string, defaultTerm string) searchModel {
+func newSearchModelForQuery(queryType string, storedUsername string, defaultTerm string, latestTerm string) searchModel {
 	return searchModel{
 		queryType:      queryType,
 		fields:         fieldsForQuery(queryType, defaultTerm),
 		storedUsername: storedUsername,
+		latestTerm:     latestTerm,
 	}
 }
 
@@ -102,6 +105,9 @@ func (m searchModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
+		// Any key clears a transient term-navigation warning so it disappears on
+		// the next interaction.
+		m.termWarning = ""
 		switch msg.String() {
 		case "esc":
 			return m, func() tea.Msg { return backMsg{} }
@@ -134,7 +140,11 @@ func (m searchModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case "h", "left":
 				m.fields[m.focused].term = models.PrevTerm(m.fields[m.focused].term)
 			case "l", "right":
-				m.fields[m.focused].term = models.NextTerm(m.fields[m.focused].term)
+				if !models.CanAdvanceTerm(m.fields[m.focused].term, m.latestTerm) {
+					m.termWarning = models.TermDisplayName(m.latestTerm) + " is the latest available term"
+				} else {
+					m.fields[m.focused].term = models.NextTerm(m.fields[m.focused].term)
+				}
 			}
 			return m, nil
 		}
@@ -190,6 +200,11 @@ func (m searchModel) View() string {
 		help += " • ^ fill my username"
 	}
 	s += "\n" + helpStyle.Render(help)
+	if m.termWarning != "" {
+		// BEL rings the terminal bell once on this render; the styled line is the
+		// guaranteed visual signal.
+		s = "\a" + s + "\n" + errorStyle.Render(m.termWarning)
+	}
 	return s
 }
 

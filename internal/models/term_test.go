@@ -10,7 +10,7 @@ func TestCurrentTerm(t *testing.T) {
 		date time.Time
 		want string
 	}{
-		{time.Date(2026, time.May, 30, 0, 0, 0, 0, time.UTC), "202630"},   // Spring 2025-26
+		{time.Date(2026, time.May, 30, 0, 0, 0, 0, time.UTC), "202630"},      // Spring 2025-26
 		{time.Date(2026, time.September, 1, 0, 0, 0, 0, time.UTC), "202710"}, // Fall 2026-27
 		{time.Date(2025, time.December, 15, 0, 0, 0, 0, time.UTC), "202620"}, // Winter 2025-26 (Dec)
 		{time.Date(2026, time.January, 10, 0, 0, 0, 0, time.UTC), "202620"},  // Winter 2025-26 (Jan)
@@ -55,6 +55,25 @@ func TestPrevTerm(t *testing.T) {
 	for _, c := range cases {
 		if got := PrevTerm(c.in); got != c.want {
 			t.Errorf("PrevTerm(%q) = %q, want %q", c.in, got, c.want)
+		}
+	}
+}
+
+func TestCanAdvanceTerm(t *testing.T) {
+	cases := []struct {
+		name            string
+		current, latest string
+		want            bool
+	}{
+		{"at latest is blocked", "202630", "202630", false},
+		{"before latest is allowed", "202620", "202630", true},
+		{"empty latest is unbounded", "202630", "", true},
+		{"already past latest is blocked", "202640", "202630", false},
+		{"steps across year boundary up to latest", "202540", "202610", true},
+	}
+	for _, c := range cases {
+		if got := CanAdvanceTerm(c.current, c.latest); got != c.want {
+			t.Errorf("%s: CanAdvanceTerm(%q, %q) = %v, want %v", c.name, c.current, c.latest, got, c.want)
 		}
 	}
 }

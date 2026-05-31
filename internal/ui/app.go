@@ -127,9 +127,11 @@ func (a App) resolvedDefaultTerm() string {
 }
 
 // maybeFetchTermsCmd returns a command that fetches the latest available term
-// when the user defaults to "latest" and a live session is available, else nil.
+// whenever a live session is available, else nil. The result populates
+// a.latestTerm, which is used both for default_term="latest" pre-selection and
+// to bound forward term navigation in the results screen.
 func (a App) maybeFetchTermsCmd() tea.Cmd {
-	if a.config.DefaultTerm != config.DefaultTermLatest || a.fixtureMode() || a.session == nil {
+	if a.fixtureMode() || a.session == nil {
 		return nil
 	}
 	return fetchDefaultTermCmd(a.session)
@@ -187,7 +189,7 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			a.menu.list.SetSize(mainW, a.height-4)
 		}
 		if len(a.results.result.Columns) > 0 {
-			a.results = newResultsModelWithData(a.results.result, a.results.queryType, a.results.params, mainW, a.height)
+			a.results = newResultsModelWithData(a.results.result, a.results.queryType, a.results.params, mainW, a.height, a.latestTerm)
 		} else {
 			a.results.width = mainW
 			a.results.height = a.height
@@ -298,7 +300,7 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return a, a.menu.Init()
 
 	case querySelectedMsg:
-		a.search = newSearchModelForQuery(msg.queryType, a.storedUsername, a.resolvedDefaultTerm())
+		a.search = newSearchModelForQuery(msg.queryType, a.storedUsername, a.resolvedDefaultTerm(), a.latestTerm)
 		a.screen = ScreenSearch
 		return a, a.search.Init()
 
@@ -311,7 +313,7 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return a, tea.Batch(a.results.Init(), advisorSearchCmd(a.session, msg.advisorName, msg.term, a.fixtures))
 
 	case queryResultMsg:
-		a.results = newResultsModelWithData(msg.result, msg.queryType, msg.params, a.mainWidth(), a.height)
+		a.results = newResultsModelWithData(msg.result, msg.queryType, msg.params, a.mainWidth(), a.height, a.latestTerm)
 		a.screen = ScreenResults
 		a.history.add(HistoryEntry{
 			QueryType: msg.queryType,
@@ -326,7 +328,7 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return a, nil
 
 	case historyEntrySelectedMsg:
-		a.results = newResultsModelWithData(msg.result, msg.queryType, msg.params, a.mainWidth(), a.height)
+		a.results = newResultsModelWithData(msg.result, msg.queryType, msg.params, a.mainWidth(), a.height, a.latestTerm)
 		a.screen = ScreenResults
 		a.historyPanel.focused = false
 		return a, nil
@@ -364,6 +366,7 @@ func (a App) resetAndFetch(queryType string, params map[string]string, jumpToRos
 	a.results = newResultsModel()
 	a.results.width = a.mainWidth()
 	a.results.height = a.height
+	a.results.latestTerm = a.latestTerm
 	a.screen = ScreenResults
 	return a, tea.Batch(a.results.Init(), executeQueryCmd(a.session, queryType, params, a.fixtures, jumpToRoster))
 }

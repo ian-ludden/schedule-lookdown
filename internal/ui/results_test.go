@@ -117,8 +117,8 @@ func TestDistributeSurplus(t *testing.T) {
 func TestComputeColWidths(t *testing.T) {
 	// columns covering all three priority tiers
 	cols := []string{"Course", "CrHrs", "Comments"}
-	prefCourse := preferredWidths["Course"]   // 11, HIGH
-	prefCrHrs := preferredWidths["CrHrs"]     // 7,  MED
+	prefCourse := preferredWidths["Course"]     // 11, HIGH
+	prefCrHrs := preferredWidths["CrHrs"]       // 7,  MED
 	prefComments := preferredWidths["Comments"] // 25, LOW
 
 	t.Run("termWidth=0 returns preferred", func(t *testing.T) {
@@ -226,6 +226,38 @@ func TestResultsTermNavKeys(t *testing.T) {
 				t.Errorf("got term %q, want %q", ct.term, tc.wantTerm)
 			}
 		})
+	}
+}
+
+func TestResultsNextTermBlockedAtLatest(t *testing.T) {
+	m := resultsModel{
+		queryType:  "schedule_lookup",
+		params:     map[string]string{"term": "202630", "username": "testuser"},
+		latestTerm: "202630",
+	}
+
+	model, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("l")})
+	if cmd != nil {
+		t.Fatalf("expected nil cmd when next term is blocked, got a command")
+	}
+	rm := model.(resultsModel)
+	if rm.termWarning == "" {
+		t.Error("expected termWarning to be set when next term is blocked")
+	}
+	if rm.params["term"] != "202630" {
+		t.Errorf("term changed to %q, want it unchanged at 202630", rm.params["term"])
+	}
+
+	// h still navigates back from the latest term, and clears the warning.
+	model, cmd = rm.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("h")})
+	if cmd == nil {
+		t.Fatal("h returned nil cmd at the latest term")
+	}
+	if _, ok := cmd().(changeTermMsg); !ok {
+		t.Errorf("expected changeTermMsg from h, got %T", cmd())
+	}
+	if model.(resultsModel).termWarning != "" {
+		t.Error("expected termWarning cleared after pressing h")
 	}
 }
 
