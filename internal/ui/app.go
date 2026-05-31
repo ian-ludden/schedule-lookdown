@@ -3,6 +3,7 @@ package ui
 import (
 	"context"
 	"fmt"
+	"maps"
 	"strings"
 	"time"
 
@@ -298,9 +299,7 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return a, a.search.Init()
 
 	case searchSubmittedMsg:
-		a.results = newResultsModel()
-		a.screen = ScreenResults
-		return a, tea.Batch(a.results.Init(), executeQueryCmd(a.session, msg.queryType, msg.params, a.fixtures, a.config.JumpToRosterOnSingleResult))
+		return a.resetAndFetch(msg.queryType, msg.params, a.config.JumpToRosterOnSingleResult)
 
 	case advisorSearchMsg:
 		a.results = newResultsModel()
@@ -338,23 +337,13 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return a, nil
 
 	case refreshCurrentQueryMsg:
-		a.results = newResultsModel()
-		a.results.width = a.mainWidth()
-		a.results.height = a.height
-		return a, tea.Batch(a.results.Init(), executeQueryCmd(a.session, msg.queryType, msg.params, a.fixtures, false))
+		return a.resetAndFetch(msg.queryType, msg.params, false)
 
 	case changeTermMsg:
 		queryType := a.results.queryType
-		newParams := make(map[string]string, len(a.results.params))
-		for k, v := range a.results.params {
-			newParams[k] = v
-		}
+		newParams := maps.Clone(a.results.params)
 		newParams["term"] = msg.term
-		a.results = newResultsModel()
-		a.results.width = a.mainWidth()
-		a.results.height = a.height
-		a.screen = ScreenResults
-		return a, tea.Batch(a.results.Init(), executeQueryCmd(a.session, queryType, newParams, a.fixtures, false))
+		return a.resetAndFetch(queryType, newParams, false)
 
 	case backMsg:
 		a.screen = ScreenMenu
@@ -363,6 +352,16 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 
 	return a.delegateToScreen(msg)
+}
+
+// resetAndFetch clears the results model, preps for the results screen,
+// and batches results initialization and the desired query.
+func (a App) resetAndFetch(queryType string, params map[string]string, jumpToRoster bool) (tea.Model, tea.Cmd) {
+	a.results = newResultsModel()
+	a.results.width = a.mainWidth()
+	a.results.height = a.height
+	a.screen = ScreenResults
+	return a, tea.Batch(a.results.Init(), executeQueryCmd(a.session, queryType, params, a.fixtures, jumpToRoster))
 }
 
 func (a App) delegateToScreen(msg tea.Msg) (tea.Model, tea.Cmd) {
