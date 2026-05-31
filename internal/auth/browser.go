@@ -214,6 +214,26 @@ func (d *debugRecorder) close() {
 	}
 }
 
+// parseWaitingStatus extracts a human-readable description from a
+// "waiting:pgid:title:btn9value" state string for progress messages.
+func parseWaitingStatus(s string) string {
+	parts := strings.SplitN(s, ":", 4)
+	var info string
+	if len(parts) >= 2 && parts[1] != "" {
+		info = parts[1]
+	}
+	if len(parts) >= 3 && parts[2] != "" {
+		if info != "" {
+			info += " / "
+		}
+		info += parts[2]
+	}
+	if len(parts) == 4 && parts[3] != "" {
+		info += " [btn: " + parts[3] + "]"
+	}
+	return info
+}
+
 // sanitizeState makes a state string safe for use in a filename.
 func sanitizeState(s string) string {
 	var b strings.Builder
@@ -469,22 +489,7 @@ func AuthenticateHeadless(ctx context.Context, username, password string, status
 			// Update status every 5 seconds; dump page HTML once at that point
 			// (5 s gives the post-password AJAX time to complete and render the MFA UI).
 			if time.Since(lastStatus) >= 5*time.Second {
-				// "waiting:pgid:title:btn9value"
-				parts := strings.SplitN(stateStr, ":", 4)
-				info := ""
-				if len(parts) >= 3 && parts[1] != "" {
-					info = parts[1]
-				}
-				if len(parts) >= 3 && parts[2] != "" {
-					if info != "" {
-						info += " / "
-					}
-					info += parts[2]
-				}
-				if len(parts) == 4 && parts[3] != "" {
-					info += " [btn: " + parts[3] + "]"
-				}
-				if info != "" {
+				if info := parseWaitingStatus(stateStr); info != "" {
 					statusFn("Waiting (" + info + ")")
 				}
 				lastStatus = time.Now()
