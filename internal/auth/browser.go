@@ -150,6 +150,78 @@ const diagSnapshotJS = `(function(){
 		+' otcvis='+(otc?(otc.offsetParent!==null?'1':'0'):'-');
 })()`
 
+// awaitPwdPageJS polls until Microsoft's login page shows either a password
+// field, a Windows-Hello bypass link, or a username-not-found error.
+const awaitPwdPageJS = `
+	document.querySelector('#i0118') !== null ||
+	document.querySelector('#idA_PWD_SwitchToPassword') !== null ||
+	(document.querySelector('#usernameError') !== null &&
+	 document.querySelector('#usernameError').offsetParent !== null)`
+
+// detectStateJS classifies the current Microsoft auth page for the MFA state
+// machine. It always returns a non-empty string so the caller can use Evaluate
+// (single-shot) instead of Poll, enabling status updates between iterations.
+//
+// Return values:
+//
+//	"done"                         — back on registrationURL; auth complete
+//	"kmsi"                         — "Stay signed in?" auto-clicked; keep looping
+//	"pick_method"                  — "Use a different verification method" link visible
+//	"sms_tile"                     — SMS tile directly clickable
+//	"sms_code"                     — OTC input field present; need user's code
+//	"error:<msg>"                  — fatal error (wrong password, ConvergedError, etc.)
+//	"waiting:<pgid>:<title>:<btn>" — unrecognised page; loop continues
+const detectStateJS = `(function(){
+	try {
+		if (document.getElementById('KmsiCheckboxField')) {
+			var b = document.getElementById('idSIButton9');
+			if (b) b.click();
+			return 'kmsi';
+		}
+		var pe = document.getElementById('passwordError');
+		if (pe && pe.offsetParent !== null && pe.textContent.trim())
+			return 'error:' + pe.textContent.trim();
+		var cfg = window.$Config;
+		if (cfg && cfg.pgid === 'ConvergedError' && cfg.iErrorCode)
+			return 'error:Microsoft error ' + cfg.iErrorCode + ': ' + (cfg.strServiceExceptionMessage || cfg.strMainMessage || '');
+		// OTC entry field: the code page uses idTxtBx_SAOTCC_OTC (Code
+		// Challenge); accept the older SAOTCSC id and a generic name="otc"
+		// too. Require it visible so a hidden remnant never matches.
+		var otc = document.querySelector('input[name="otc"],#idTxtBx_SAOTCC_OTC,#idTxtBx_SAOTCSC_OTC');
+		if (otc !== null && otc.offsetParent !== null) return 'sms_code';
+		var saw = document.getElementById('signInAnotherWay');
+		if (saw !== null && saw.offsetParent !== null) return 'pick_method';
+		// Proof picker (idDiv_SAOTCS_Proofs): the SMS tile is a KO-bound div.
+		// Require it visible so we stop firing once the page transitions to
+		// OTC entry and the proofs list is hidden.
+		var smsTile = document.querySelector('[data-value="OneWaySMS"],[data-identity="OneWaySMS"]');
+		if (smsTile !== null && smsTile.offsetParent !== null) return 'sms_tile';
+		if (document.location.href.startsWith('` + registrationURL + `')) return 'done';
+		var aadTile = document.getElementById('aadTile');
+		if (aadTile !== null && aadTile.offsetParent !== null) return 'aad_tile';
+		var btn9 = document.getElementById('idSIButton9');
+		var btn9val = btn9 ? (btn9.value || btn9.innerText || '').trim() : '';
+		// Visible password field + a visible, enabled submit button means
+		// credential entry is required. Detect this structurally rather than
+		// by the button's label: idSIButton9's value is Knockout-bound, so it
+		// reads back empty before bindings apply and an exact 'Sign in' match
+		// silently misses, leaving the loop spinning on the password page.
+		var i0118 = document.getElementById('i0118');
+		if (i0118 !== null && i0118.offsetParent !== null &&
+				btn9 && !btn9.disabled && btn9.offsetParent !== null) return 'pwd_page';
+		// Post-password intermediate step: signal Go to click a visible "Next"
+		// button.  offsetParent === null means display:none — skip hidden buttons
+		// and let the SPA's autoSubmit binding handle form submission instead.
+		if (btn9 && !btn9.disabled && btn9.offsetParent !== null &&
+				(i0118 === null || i0118.offsetParent === null) && btn9val === 'Next') {
+			return 'next_button';
+		}
+		return 'waiting:' + (cfg && cfg.pgid ? cfg.pgid : '') + ':' + document.title + ':' + btn9val;
+	} catch(e) {
+		return 'waiting:::' + e.message;
+	}
+})()`
+
 // debugRecorder captures per-iteration auth diagnostics to a timestamped run
 // directory. It is enabled by the SCHEDULE_LOOKDOWN_DEBUG env var; when unset,
 // every method is a cheap no-op so production runs write nothing.
@@ -252,36 +324,24 @@ func sanitizeState(s string) string {
 	return out
 }
 
-// AuthenticateHeadless runs a headless Chrome in WSL2, automates the
-// Microsoft SAML login with the given credentials, and returns session cookies.
-// statusFn, if non-nil, is called with user-facing progress messages.
-// mfaCodeFn, if non-nil, is called when an SMS code is needed; it should
-// block until the user provides the code and return it.
-func AuthenticateHeadless(ctx context.Context, username, password string, statusFn func(string), mfaCodeFn func() string) ([]*http.Cookie, error) {
-	if statusFn == nil {
-		statusFn = func(string) {}
-	}
-	if mfaCodeFn == nil {
-		mfaCodeFn = func() string { return "" }
-	}
-
+// launchHeadlessChrome starts a headless Chrome instance connected via the
+// Chrome DevTools Protocol and returns a ready chromedp context. The caller
+// must invoke the returned cancel func to stop Chrome and clean up resources.
+func launchHeadlessChrome(ctx context.Context) (chromeCtx context.Context, cancel func(), err error) {
 	browserPath, err := findBrowser()
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-
 	port, err := findFreePort()
 	if err != nil {
-		return nil, fmt.Errorf("find free port: %w", err)
+		return nil, nil, fmt.Errorf("find free port: %w", err)
 	}
-
 	// Isolated profile dir prevents a singleton conflict with any running
 	// Chrome and keeps this instance away from the user's normal profile.
 	tmpDir, err := os.MkdirTemp("", "schedule-lookdown-chrome-")
 	if err != nil {
-		return nil, fmt.Errorf("create chrome temp dir: %w", err)
+		return nil, nil, fmt.Errorf("create chrome temp dir: %w", err)
 	}
-
 	cmd := exec.CommandContext(ctx, browserPath,
 		"--headless=new",
 		"--no-sandbox",
@@ -302,91 +362,92 @@ func AuthenticateHeadless(ctx context.Context, username, password string, status
 	)
 	if err := cmd.Start(); err != nil {
 		_ = os.RemoveAll(tmpDir)
-		return nil, fmt.Errorf("start headless Chrome: %w", err)
+		return nil, nil, fmt.Errorf("start headless Chrome: %w", err)
 	}
-	defer func() {
+	cleanup := func() {
 		cmd.Process.Kill()
 		os.RemoveAll(tmpDir)
-	}()
-
+	}
 	// Both Chrome and chromedp are in WSL2 — plain localhost works.
 	wsURL, err := waitForDebugger(ctx, port)
 	if err != nil {
-		return nil, err
+		cleanup()
+		return nil, nil, err
 	}
+	allocCtx, cancelAlloc := chromedp.NewRemoteAllocator(ctx, wsURL)
+	chromeCtx, cancelChrome := chromedp.NewContext(allocCtx)
+	return chromeCtx, func() {
+		cancelChrome()
+		cancelAlloc()
+		cleanup()
+	}, nil
+}
 
-	allocCtx, cancel := chromedp.NewRemoteAllocator(ctx, wsURL)
-	defer cancel()
-
-	chromeCtx, cancel := chromedp.NewContext(allocCtx)
-	defer cancel()
-
-	email := username + emailDomain
+// enterEmailAndPassword navigates to the registration URL, enters the given
+// email address, handles whichever password-entry variant Microsoft presents
+// (direct field, Windows-Hello bypass link, or username error), submits the
+// password, and waits until the page has moved past the password step.
+func enterEmailAndPassword(ctx context.Context, email, password string, statusFn func(string)) error {
 	statusFn("Signing in as " + email + "...")
 
 	// Step 1: navigate and enter email address.
-	if err := chromedp.Run(chromeCtx,
+	if err := chromedp.Run(ctx,
 		chromedp.Navigate(registrationURL),
 		chromedp.WaitVisible(`#i0116`),
 		chromedp.SendKeys(`#i0116`, email),
 		chromedp.Click(`#idSIButton9`),
 	); err != nil {
-		return nil, fmt.Errorf("email entry: %w", err)
+		return fmt.Errorf("email entry: %w", err)
 	}
 
 	// Step 2: wait for either a direct password field, a "use password instead"
 	// link (common when Windows Hello is the default on this account), or an
 	// error that the account doesn't exist.
-	const awaitPwdPage = `
-		document.querySelector('#i0118') !== null ||
-		document.querySelector('#idA_PWD_SwitchToPassword') !== null ||
-		(document.querySelector('#usernameError') !== null &&
-		 document.querySelector('#usernameError').offsetParent !== null)`
-	if err := chromedp.Run(chromeCtx,
-		chromedp.Poll(awaitPwdPage, nil, chromedp.WithPollingTimeout(30*time.Second)),
+	if err := chromedp.Run(ctx,
+		chromedp.Poll(awaitPwdPageJS, nil, chromedp.WithPollingTimeout(30*time.Second)),
 	); err != nil {
-		return nil, fmt.Errorf("waiting for password page: %w", err)
+		return fmt.Errorf("waiting for password page: %w", err)
 	}
 
 	var hasPwdField, hasUsernameError bool
-	if err := chromedp.Run(chromeCtx,
+	if err := chromedp.Run(ctx,
 		chromedp.Evaluate(`!!document.querySelector('#i0118')`, &hasPwdField),
 		chromedp.Evaluate(`!!(document.querySelector('#usernameError')?.offsetParent)`, &hasUsernameError),
 	); err != nil {
-		return nil, err
+		return err
 	}
 
 	if hasUsernameError {
 		var errText string
-		_ = chromedp.Run(chromeCtx, chromedp.Evaluate(
+		_ = chromedp.Run(ctx, chromedp.Evaluate(
 			`document.getElementById('usernameError').textContent.trim()`, &errText))
-		return nil, fmt.Errorf("account not found: %s — is %s correct?", errText, email)
+		return fmt.Errorf("account not found: %s — is %s correct?", errText, email)
 	}
 
 	if !hasPwdField {
 		// "Use your password instead" link appeared — click it.
-		if err := chromedp.Run(chromeCtx,
+		if err := chromedp.Run(ctx,
 			chromedp.Click(`#idA_PWD_SwitchToPassword`),
 			chromedp.WaitVisible(`#i0118`),
 		); err != nil {
-			return nil, fmt.Errorf("switching to password sign-in: %w", err)
+			return fmt.Errorf("switching to password sign-in: %w", err)
 		}
 	}
 
 	// Step 3: enter password and wait for the page to leave the password step.
 	statusFn("Entering credentials...")
-	if err := chromedp.Run(chromeCtx,
+	if err := chromedp.Run(ctx,
 		chromedp.SendKeys(`#i0118`, password),
 		chromedp.Click(`#idSIButton9`),
 	); err != nil {
-		return nil, fmt.Errorf("password entry: %w", err)
+		return fmt.Errorf("password entry: %w", err)
 	}
 
 	// Poll until #i0118 disappears (submit was accepted and page changed) or
-	// passwordError appears (wrong password). Doing this before step 4 ensures
-	// the HTML dump captures the MFA page, not the password page.
+	// passwordError appears (wrong password). Doing this before the MFA loop
+	// ensures the HTML dump captures the MFA page, not the password page.
 	statusFn("Verifying credentials...")
-	if err := chromedp.Run(chromeCtx,
+	if err := chromedp.Run(ctx,
 		chromedp.Poll(`(function(){
 			if (document.getElementById('i0118') === null) return true;
 			var pe = document.getElementById('passwordError');
@@ -397,86 +458,172 @@ func AuthenticateHeadless(ctx context.Context, username, password string, status
 			chromedp.WithPollingInterval(pollingIntervalMS*time.Millisecond),
 			chromedp.WithPollingTimeout(30*time.Second)),
 	); err != nil {
-		return nil, fmt.Errorf("signing in: %w", err)
+		return fmt.Errorf("signing in: %w", err)
 	}
 
-	// Step 4: MFA + completion loop.
-	// detectState always returns a non-empty string so we can use Evaluate
-	// (single-shot) instead of Poll, enabling status updates between iterations.
-	//
-	// Return values:
-	//   "done"                   — back on registrationURL; auth complete
-	//   "kmsi"                   — "Stay signed in?" auto-clicked; keep looping
-	//   "pick_method"            — "Use a different verification method" link visible
-	//   "sms_tile"               — SMS tile directly clickable
-	//   "sms_code"               — OTC input field present; need user's code
-	//   "error:<msg>"            — fatal error (wrong password, ConvergedError, etc.)
-	//   "waiting:<pgid>:<title>" — unrecognised page; loop continues
-	detectState := `(function(){
-		try {
-			if (document.getElementById('KmsiCheckboxField')) {
-				var b = document.getElementById('idSIButton9');
-				if (b) b.click();
-				return 'kmsi';
-			}
-			var pe = document.getElementById('passwordError');
-			if (pe && pe.offsetParent !== null && pe.textContent.trim())
-				return 'error:' + pe.textContent.trim();
-			var cfg = window.$Config;
-			if (cfg && cfg.pgid === 'ConvergedError' && cfg.iErrorCode)
-				return 'error:Microsoft error ' + cfg.iErrorCode + ': ' + (cfg.strServiceExceptionMessage || cfg.strMainMessage || '');
-			// OTC entry field: the code page uses idTxtBx_SAOTCC_OTC (Code
-			// Challenge); accept the older SAOTCSC id and a generic name="otc"
-			// too. Require it visible so a hidden remnant never matches.
-			var otc = document.querySelector('input[name="otc"],#idTxtBx_SAOTCC_OTC,#idTxtBx_SAOTCSC_OTC');
-			if (otc !== null && otc.offsetParent !== null) return 'sms_code';
-			var saw = document.getElementById('signInAnotherWay');
-			if (saw !== null && saw.offsetParent !== null) return 'pick_method';
-			// Proof picker (idDiv_SAOTCS_Proofs): the SMS tile is a KO-bound div.
-			// Require it visible so we stop firing once the page transitions to
-			// OTC entry and the proofs list is hidden.
-			var smsTile = document.querySelector('[data-value="OneWaySMS"],[data-identity="OneWaySMS"]');
-			if (smsTile !== null && smsTile.offsetParent !== null) return 'sms_tile';
-			if (document.location.href.startsWith('` + registrationURL + `')) return 'done';
-			var aadTile = document.getElementById('aadTile');
-			if (aadTile !== null && aadTile.offsetParent !== null) return 'aad_tile';
-			var btn9 = document.getElementById('idSIButton9');
-			var btn9val = btn9 ? (btn9.value || btn9.innerText || '').trim() : '';
-			// Visible password field + a visible, enabled submit button means
-			// credential entry is required. Detect this structurally rather than
-			// by the button's label: idSIButton9's value is Knockout-bound, so it
-			// reads back empty before bindings apply and an exact 'Sign in' match
-			// silently misses, leaving the loop spinning on the password page.
-			var i0118 = document.getElementById('i0118');
-			if (i0118 !== null && i0118.offsetParent !== null &&
-					btn9 && !btn9.disabled && btn9.offsetParent !== null) return 'pwd_page';
-			// Post-password intermediate step: signal Go to click a visible "Next"
-			// button.  offsetParent === null means display:none — skip hidden buttons
-			// and let the SPA's autoSubmit binding handle form submission instead.
-			if (btn9 && !btn9.disabled && btn9.offsetParent !== null &&
-					(i0118 === null || i0118.offsetParent === null) && btn9val === 'Next') {
-				return 'next_button';
-			}
-			return 'waiting:' + (cfg && cfg.pgid ? cfg.pgid : '') + ':' + document.title + ':' + btn9val;
-		} catch(e) {
-			return 'waiting:::' + e.message;
-		}
-	})()`
+	return nil
+}
+
+// clickNextButton dispatches a JS mouse-event sequence to the visible Next
+// button and updates last to throttle repeated calls to once every 3 s.
+//
+// chromedp.Click blocks on NodeReady, which hangs when the SPA replaces the
+// element during the query. JS event dispatch returns immediately.
+func clickNextButton(ctx context.Context, last *time.Time, statusFn func(string)) {
+	if time.Since(*last) < 3*time.Second {
+		return
+	}
+	statusFn("Clicking Next...")
+	clickCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	_ = chromedp.Run(clickCtx, chromedp.Evaluate(`(function(){
+		var btn = document.querySelector('#idSIButton9:not([disabled])');
+		if (!btn) return;
+		['pointerdown','mousedown','mouseup','click'].forEach(function(t){
+			btn.dispatchEvent(new MouseEvent(t,{bubbles:true,cancelable:true,view:window}));
+		});
+	})()`, nil))
+	cancel()
+	*last = time.Now()
+}
+
+// handlePwdPage enters the password on the re-surfaced password page and clicks
+// submit, then updates last. Throttled with a 10 s cooldown to prevent
+// double-submit if pwd_page re-fires while the page is mid-transition.
+//
+// chromedp.SendKeys dispatches key events to the focused element; Knockout does
+// not auto-focus #i0118 on this page (unlike the initial sign-in step), so we
+// must focus it explicitly. Clears any existing value first so a wrong-password
+// retry doesn't double the input. Dispatch 'input' so KO's observable clears too.
+func handlePwdPage(ctx context.Context, password string, last *time.Time, statusFn func(string)) {
+	if time.Since(*last) < 10*time.Second {
+		return
+	}
+	statusFn("Entering credentials...")
+	typeCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	_ = chromedp.Run(typeCtx,
+		chromedp.Focus(`#i0118`),
+		chromedp.Evaluate(`(function(){
+			var f=document.getElementById('i0118');
+			if(f){f.value='';f.dispatchEvent(new Event('input',{bubbles:true}));}
+		})()`, nil),
+		chromedp.SendKeys(`#i0118`, password),
+	)
+	cancel()
+	time.Sleep(200 * time.Millisecond)
+	clickCtx, cancel2 := context.WithTimeout(ctx, 3*time.Second)
+	_ = chromedp.Run(clickCtx, chromedp.Click(`#idSIButton9`))
+	cancel2()
+	*last = time.Now()
+}
+
+// handlePickMethod clicks the "Sign in another way" link to open the MFA method
+// list. Throttled with an 8 s cooldown shared with handleSMSTile (via last) so
+// the list isn't re-opened every iteration while it renders.
+func handlePickMethod(ctx context.Context, last *time.Time, statusFn func(string)) {
+	if time.Since(*last) < 8*time.Second {
+		return
+	}
+	statusFn("Choosing another verification method...")
+	_ = chromedp.Run(ctx, chromedp.Click(`#signInAnotherWay`))
+	*last = time.Now()
+}
+
+// handleSMSTile dispatches a JS mouse-event sequence to the SMS proof tile.
+// Throttled with an 8 s cooldown shared with handlePickMethod (via last);
+// clicking every iteration re-triggers the picker and never lets the OTC page
+// settle — and re-sends SMS codes.
+//
+// chromedp.Click blocks on NodeReady, which hangs during the SPA swap.
+func handleSMSTile(ctx context.Context, last *time.Time, statusFn func(string)) {
+	if time.Since(*last) < 8*time.Second {
+		return
+	}
+	statusFn("Requesting SMS code...")
+	clickCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	_ = chromedp.Run(clickCtx, chromedp.Evaluate(`(function(){
+		var t=document.querySelector('[data-value="OneWaySMS"],[data-identity="OneWaySMS"]');
+		if(!t) return;
+		['pointerdown','mousedown','mouseup','click'].forEach(function(e){
+			t.dispatchEvent(new MouseEvent(e,{bubbles:true,cancelable:true,view:window}));
+		});
+	})()`, nil))
+	cancel()
+	*last = time.Now()
+}
+
+// handleSMSCode types the user-supplied OTC into the Knockout-bound input,
+// clicks Continue, then waits for the field to leave or an error to surface
+// before returning — preventing a slow transition from triggering a duplicate
+// code prompt.
+//
+// The Continue button is enable-bound and stays disabled until KO observes the
+// value. Mirror the password pattern: focus a concrete id, clear via JS input
+// event, type real keystrokes, then click a concrete id. Comma-list selectors
+// don't resolve reliably through chromedp.
+func handleSMSCode(ctx context.Context, code string, statusFn func(string)) {
+	statusFn("Submitting code...")
+	typeCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	_ = chromedp.Run(typeCtx,
+		chromedp.Focus(`#idTxtBx_SAOTCC_OTC`),
+		chromedp.Evaluate(`(function(){
+			var f=document.getElementById('idTxtBx_SAOTCC_OTC');
+			if(f){f.value='';f.dispatchEvent(new Event('input',{bubbles:true}));}
+		})()`, nil),
+		chromedp.SendKeys(`#idTxtBx_SAOTCC_OTC`, code),
+	)
+	cancel()
+	time.Sleep(300 * time.Millisecond)
+	clickCtx, cancel2 := context.WithTimeout(ctx, 3*time.Second)
+	_ = chromedp.Run(clickCtx, chromedp.Click(`#idSubmit_SAOTCC_Continue`))
+	cancel2()
+	waitCtx, cancel3 := context.WithTimeout(ctx, 20*time.Second)
+	_ = chromedp.Run(waitCtx, chromedp.Poll(`(function(){
+		var f=document.getElementById('idTxtBx_SAOTCC_OTC');
+		if(!f || f.offsetParent===null) return true;
+		var e=document.querySelector('[id^="idDiv_SAOTCC_Error"],[id^="idSpan_SAOTCC_Error"]');
+		if(e && e.offsetParent!==null && e.textContent.trim()) return true;
+		return false;
+	})()`, nil, chromedp.WithPollingTimeout(20*time.Second)))
+	cancel3()
+}
+
+// AuthenticateHeadless runs a headless Chrome in WSL2, automates the
+// Microsoft SAML login with the given credentials, and returns session cookies.
+// statusFn, if non-nil, is called with user-facing progress messages.
+// mfaCodeFn, if non-nil, is called when an SMS code is needed; it should
+// block until the user provides the code and return it.
+func AuthenticateHeadless(ctx context.Context, username, password string, statusFn func(string), mfaCodeFn func() string) ([]*http.Cookie, error) {
+	if statusFn == nil {
+		statusFn = func(string) {}
+	}
+	if mfaCodeFn == nil {
+		mfaCodeFn = func() string { return "" }
+	}
+
+	chromeCtx, cancel, err := launchHeadlessChrome(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer cancel()
+
+	email := username + emailDomain
+	if err := enterEmailAndPassword(chromeCtx, email, password, statusFn); err != nil {
+		return nil, err
+	}
 
 	recorder := newDebugRecorder(statusFn)
 	defer recorder.close()
 
-	loopStart := time.Now()
-	lastStatus := loopStart
 	lastNextClick := time.Time{}
 	lastPwdEntry := time.Time{}
 	lastSmsClick := time.Time{}
-	deadline := loopStart.Add(authTimeout)
+	lastStatus := time.Now()
+	deadline := time.Now().Add(authTimeout)
 
 	var rawCookies []*network.Cookie
 	for time.Now().Before(deadline) {
 		var stateStr string
-		if err := chromedp.Run(chromeCtx, chromedp.Evaluate(detectState, &stateStr)); err != nil {
+		if err := chromedp.Run(chromeCtx, chromedp.Evaluate(detectStateJS, &stateStr)); err != nil {
 			return nil, fmt.Errorf("auth poll: %w", err)
 		}
 		recorder.record(chromeCtx, stateStr)
@@ -486,8 +633,8 @@ func AuthenticateHeadless(ctx context.Context, username, password string, status
 			return nil, fmt.Errorf("%s", strings.TrimPrefix(stateStr, "error:"))
 
 		case strings.HasPrefix(stateStr, "waiting:"):
-			// Update status every 5 seconds; dump page HTML once at that point
-			// (5 s gives the post-password AJAX time to complete and render the MFA UI).
+			// Update status every 5 s; 5 s gives the post-password AJAX time to
+			// complete and render the MFA UI before the first status message fires.
 			if time.Since(lastStatus) >= 5*time.Second {
 				if info := parseWaitingStatus(stateStr); info != "" {
 					statusFn("Waiting (" + info + ")")
@@ -511,24 +658,7 @@ func AuthenticateHeadless(ctx context.Context, username, password string, status
 			time.Sleep(pollingIntervalMS * time.Millisecond)
 
 		case stateStr == "next_button":
-			// Dispatch the full mouse-event sequence via JS rather than chromedp.Click.
-			// chromedp.Click blocks on NodeReady, which hangs when the SPA replaces the
-			// element during the query.  JS event dispatch returns immediately.
-			// Throttle to once every 3 s; wrap in a short timeout as a safety net.
-			now := time.Now()
-			if now.After(lastNextClick.Add(3 * time.Second)) {
-				statusFn("Clicking Next...")
-				clickCtx, cancel := context.WithTimeout(chromeCtx, 2*time.Second)
-				_ = chromedp.Run(clickCtx, chromedp.Evaluate(`(function(){
-					var btn = document.querySelector('#idSIButton9:not([disabled])');
-					if (!btn) return;
-					['pointerdown','mousedown','mouseup','click'].forEach(function(t){
-						btn.dispatchEvent(new MouseEvent(t,{bubbles:true,cancelable:true,view:window}));
-					});
-				})()`, nil))
-				cancel()
-				lastNextClick = now
-			}
+			clickNextButton(chromeCtx, &lastNextClick, statusFn)
 			time.Sleep(pollingIntervalMS * time.Millisecond)
 
 		case stateStr == "aad_tile":
@@ -543,108 +673,21 @@ func AuthenticateHeadless(ctx context.Context, username, password string, status
 			time.Sleep(500 * time.Millisecond)
 
 		case stateStr == "pwd_page":
-			// Cooldown prevents a double-submit if pwd_page re-fires while the
-			// page is mid-transition after the first submit.
-			if time.Since(lastPwdEntry) < 10*time.Second {
-				time.Sleep(pollingIntervalMS * time.Millisecond)
-				continue
-			}
-			statusFn("Entering credentials...")
-			// chromedp.SendKeys dispatches key events to the currently focused
-			// element, not to the selector.  In step 3 Knockout auto-focuses #i0118
-			// on page load; here it doesn't, so we must focus it explicitly first.
-			typeCtx, cancel := context.WithTimeout(chromeCtx, 5*time.Second)
-			_ = chromedp.Run(typeCtx,
-				chromedp.Focus(`#i0118`),
-				// Clear any existing value before typing. SendKeys appends, so on a
-				// wrong-password retry an un-cleared field would submit a doubled
-				// password. Dispatch 'input' so Knockout's observable clears too.
-				chromedp.Evaluate(`(function(){
-					var f=document.getElementById('i0118');
-					if(f){f.value='';f.dispatchEvent(new Event('input',{bubbles:true}));}
-				})()`, nil),
-				chromedp.SendKeys(`#i0118`, password),
-			)
-			cancel()
-			time.Sleep(200 * time.Millisecond)
-			clickCtx, cancel2 := context.WithTimeout(chromeCtx, 3*time.Second)
-			_ = chromedp.Run(clickCtx, chromedp.Click(`#idSIButton9`))
-			cancel2()
-			lastPwdEntry = time.Now()
+			handlePwdPage(chromeCtx, password, &lastPwdEntry, statusFn)
 			time.Sleep(pollingIntervalMS * time.Millisecond)
 
 		case stateStr == "pick_method":
-			// "Sign in another way" link: open the method list. Guarded so we
-			// don't re-open it every iteration while the list renders.
-			if time.Since(lastSmsClick) < 8*time.Second {
-				time.Sleep(pollingIntervalMS * time.Millisecond)
-				continue
-			}
-			statusFn("Choosing another verification method...")
-			_ = chromedp.Run(chromeCtx, chromedp.Click(`#signInAnotherWay`))
-			lastSmsClick = time.Now()
+			handlePickMethod(chromeCtx, &lastSmsClick, statusFn)
 			time.Sleep(pollingIntervalMS * time.Millisecond)
 
 		case stateStr == "sms_tile":
-			// The proof tile is a Knockout-bound <div> (click: proof_onClick).
-			// Click it ONCE, then wait: clicking every iteration re-triggers the
-			// picker and never lets the OTC page settle (and re-sends SMS codes).
-			// Dispatch the mouse-event sequence via JS so KO's binding fires
-			// without chromedp.Click blocking on NodeReady during the SPA swap.
-			if time.Since(lastSmsClick) < 8*time.Second {
-				time.Sleep(pollingIntervalMS * time.Millisecond)
-				continue
-			}
-			statusFn("Requesting SMS code...")
-			clickCtx, cancel := context.WithTimeout(chromeCtx, 3*time.Second)
-			_ = chromedp.Run(clickCtx, chromedp.Evaluate(`(function(){
-				var t=document.querySelector('[data-value="OneWaySMS"],[data-identity="OneWaySMS"]');
-				if(!t) return;
-				['pointerdown','mousedown','mouseup','click'].forEach(function(e){
-					t.dispatchEvent(new MouseEvent(e,{bubbles:true,cancelable:true,view:window}));
-				});
-			})()`, nil))
-			cancel()
-			lastSmsClick = time.Now()
+			handleSMSTile(chromeCtx, &lastSmsClick, statusFn)
 			time.Sleep(pollingIntervalMS * time.Millisecond)
 
 		case stateStr == "sms_code":
 			statusFn("Check your phone for an SMS code")
 			code := mfaCodeFn()
-			statusFn("Submitting code...")
-			// The OTC input is a custom Knockout textbox component and the
-			// Continue button is enable-bound, so it stays disabled until KO sees
-			// the value. Mirror the proven password pattern: focus a concrete id,
-			// clear, type real keystrokes (which fire the events KO listens for),
-			// then click the concrete submit id. Comma-list selectors don't
-			// resolve reliably through chromedp, which is why the prior attempt
-			// left the button disabled and re-prompted.
-			typeCtx, cancel := context.WithTimeout(chromeCtx, 5*time.Second)
-			_ = chromedp.Run(typeCtx,
-				chromedp.Focus(`#idTxtBx_SAOTCC_OTC`),
-				chromedp.Evaluate(`(function(){
-					var f=document.getElementById('idTxtBx_SAOTCC_OTC');
-					if(f){f.value='';f.dispatchEvent(new Event('input',{bubbles:true}));}
-				})()`, nil),
-				chromedp.SendKeys(`#idTxtBx_SAOTCC_OTC`, code),
-			)
-			cancel()
-			time.Sleep(300 * time.Millisecond)
-			clickCtx, cancel2 := context.WithTimeout(chromeCtx, 3*time.Second)
-			_ = chromedp.Run(clickCtx, chromedp.Click(`#idSubmit_SAOTCC_Continue`))
-			cancel2()
-			// Wait for the OTC field to leave (accepted) or an error to surface
-			// (wrong/expired code) before looping, so a slow transition can't
-			// trigger a duplicate code prompt.
-			waitCtx, cancel3 := context.WithTimeout(chromeCtx, 20*time.Second)
-			_ = chromedp.Run(waitCtx, chromedp.Poll(`(function(){
-				var f=document.getElementById('idTxtBx_SAOTCC_OTC');
-				if(!f || f.offsetParent===null) return true;
-				var e=document.querySelector('[id^="idDiv_SAOTCC_Error"],[id^="idSpan_SAOTCC_Error"]');
-				if(e && e.offsetParent!==null && e.textContent.trim()) return true;
-				return false;
-			})()`, nil, chromedp.WithPollingTimeout(20*time.Second)))
-			cancel3()
+			handleSMSCode(chromeCtx, code, statusFn)
 		}
 	}
 	return nil, fmt.Errorf("authentication timed out after %v", authTimeout)
