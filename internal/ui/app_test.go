@@ -152,7 +152,7 @@ func TestAppTermNavIntegration(t *testing.T) {
 		},
 		"schedule_lookup",
 		map[string]string{"term": "202610", "username": "quinna"},
-		120, 40,
+		120, 40, "",
 	)
 	app.screen = ScreenResults
 

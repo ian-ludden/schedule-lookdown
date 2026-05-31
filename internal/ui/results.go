@@ -66,17 +66,19 @@ var columnPriority = map[string]int{
 }
 
 type resultsModel struct {
-	table      table.Model
-	result     query.Result
-	queryType  string
-	params     map[string]string
-	meta       string // styled metadata header rendered above the table
-	err        error
-	spinner    spinner.Model
-	loading    bool
-	showDetail bool
-	width      int
-	height     int
+	table       table.Model
+	result      query.Result
+	queryType   string
+	params      map[string]string
+	meta        string // styled metadata header rendered above the table
+	latestTerm  string // furthest-future available term; "" means no upper bound
+	termWarning string // transient message shown when forward nav is blocked
+	err         error
+	spinner     spinner.Model
+	loading     bool
+	showDetail  bool
+	width       int
+	height      int
 }
 
 func newResultsModel() resultsModel {
@@ -86,8 +88,8 @@ func newResultsModel() resultsModel {
 	return resultsModel{spinner: s, loading: true}
 }
 
-func newResultsModelWithData(result query.Result, queryType string, params map[string]string, width, height int) resultsModel {
-	m := resultsModel{result: result, queryType: queryType, params: params, width: width, height: height}
+func newResultsModelWithData(result query.Result, queryType string, params map[string]string, width, height int, latestTerm string) resultsModel {
+	m := resultsModel{result: result, queryType: queryType, params: params, width: width, height: height, latestTerm: latestTerm}
 	m.meta = renderMetadataBlock(queryType, result, params, width)
 	m.table = buildResultsTable(result, width, height, metaReservedLines(m.meta))
 	return m
@@ -284,6 +286,9 @@ func (m resultsModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	}
+	// Any key clears a transient term-navigation warning so it disappears on the
+	// next interaction.
+	m.termWarning = ""
 	switch msg.String() {
 	case "esc", "q":
 		return m, func() tea.Msg { return backMsg{} }
@@ -294,6 +299,10 @@ func (m resultsModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	case "l":
 		if term := m.params["term"]; term != "" {
+			if !models.CanAdvanceTerm(term, m.latestTerm) {
+				m.termWarning = models.TermDisplayName(m.latestTerm) + " is the latest available term"
+				return m, nil
+			}
 			next := models.NextTerm(term)
 			return m, func() tea.Msg { return changeTermMsg{term: next} }
 		}
@@ -576,9 +585,17 @@ func (m resultsModel) View() string {
 	if m.meta != "" {
 		header += m.meta + "\n"
 	}
-	return header +
+	footer := helpStyle.Render(help)
+	prefix := ""
+	if m.termWarning != "" {
+		// BEL rings the terminal bell once on this render; the styled line is the
+		// guaranteed visual signal.
+		prefix = "\a"
+		footer += "\n" + errorStyle.Render(m.termWarning)
+	}
+	return prefix + header +
 		resultsBaseStyle.Render(m.table.View()) +
-		"\n" + helpStyle.Render(help)
+		"\n" + footer
 }
 
 // renderDetail returns a string with all columns and their values for the

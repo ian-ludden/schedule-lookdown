@@ -108,6 +108,16 @@ func LatestTerm(codes []string) string {
 	return latest
 }
 
+// CanAdvanceTerm reports whether stepping forward from current stays within the
+// latest available term. An empty latest (unknown) is treated as no limit.
+// Term codes are YYYYTT, so lexicographic order matches chronological order.
+func CanAdvanceTerm(current, latest string) bool {
+	if latest == "" {
+		return true
+	}
+	return NextTerm(current) <= latest
+}
+
 // TermDisplayName converts a term code to a human-readable name.
 // Examples: "202630" → "Spring 2025-26", "202640" → "Summer 2026".
 // Unknown or malformed codes are returned as-is.
