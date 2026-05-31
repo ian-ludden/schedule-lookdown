@@ -32,6 +32,10 @@ const (
 	ScreenResults
 )
 
+func isAuthScreen(s Screen) bool {
+	return s == ScreenLogin || s == ScreenPassword || s == ScreenUsername || s == ScreenMFACode
+}
+
 type App struct {
 	screen         Screen
 	session        *auth.Session
@@ -59,7 +63,7 @@ func (a App) mainWidth() int {
 	if a.width <= 0 {
 		return 0
 	}
-	if a.screen == ScreenLogin || a.screen == ScreenPassword || a.screen == ScreenUsername || a.screen == ScreenMFACode {
+	if isAuthScreen(a.screen) {
 		return a.width
 	}
 	w := a.width - panelTotalWidth
@@ -422,7 +426,7 @@ func (a App) View() string {
 	}
 
 	// Auth screens have no history panel.
-	if a.screen == ScreenLogin || a.screen == ScreenPassword || a.screen == ScreenUsername || a.screen == ScreenMFACode {
+	if isAuthScreen(a.screen) {
 		return lipgloss.Place(a.width, a.height, lipgloss.Left, lipgloss.Top, mainContent)
 	}
 
