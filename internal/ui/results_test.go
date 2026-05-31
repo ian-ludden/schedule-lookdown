@@ -1,12 +1,203 @@
 package ui
 
 import (
+	"reflect"
+	"sort"
 	"testing"
 
 	"github.com/charmbracelet/bubbles/table"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/luddenig/schedule-lookdown/internal/query"
 )
+
+// ---- computeColWidths and helper tests ----
+
+func TestBuildPreferredWidths(t *testing.T) {
+	cols := []string{"Course", "CRN", "UNKNOWN"}
+	widths, total := buildPreferredWidths(cols)
+	if widths["Course"] != preferredWidths["Course"] {
+		t.Errorf("Course: got %d, want %d", widths["Course"], preferredWidths["Course"])
+	}
+	if widths["CRN"] != preferredWidths["CRN"] {
+		t.Errorf("CRN: got %d, want %d", widths["CRN"], preferredWidths["CRN"])
+	}
+	if widths["UNKNOWN"] != defaultColWidth {
+		t.Errorf("UNKNOWN: got %d, want %d (defaultColWidth)", widths["UNKNOWN"], defaultColWidth)
+	}
+	want := preferredWidths["Course"] + preferredWidths["CRN"] + defaultColWidth
+	if total != want {
+		t.Errorf("total: got %d, want %d", total, want)
+	}
+}
+
+func TestCalcAvailable(t *testing.T) {
+	for _, tc := range []struct {
+		termWidth, numCols, want int
+	}{
+		{100, 5, 100 - outerBorderWidth - cellPadding*5},
+		// floor: tiny terminal forces at least numCols*minColWidth
+		{10, 5, 5 * minColWidth},
+	} {
+		got := calcAvailable(tc.termWidth, tc.numCols)
+		if got != tc.want {
+			t.Errorf("calcAvailable(%d,%d) = %d, want %d", tc.termWidth, tc.numCols, got, tc.want)
+		}
+	}
+}
+
+func TestPartitionByPriority(t *testing.T) {
+	cols := []string{"Course", "CrHrs", "Comments", "MYSTERY"}
+	widths := map[string]int{"Course": 11, "CrHrs": 7, "Comments": 25, "MYSTERY": 15}
+	high, med, low, sumHigh, sumMed := partitionByPriority(cols, widths)
+
+	if !reflect.DeepEqual(high, []string{"Course"}) {
+		t.Errorf("high = %v, want [Course]", high)
+	}
+	// CrHrs is priority 2; MYSTERY falls back to defaultPriority (2)
+	wantMed := []string{"CrHrs", "MYSTERY"}
+	gotMed := append([]string{}, med...)
+	sort.Strings(gotMed)
+	sort.Strings(wantMed)
+	if !reflect.DeepEqual(gotMed, wantMed) {
+		t.Errorf("med = %v, want %v", med, wantMed)
+	}
+	if !reflect.DeepEqual(low, []string{"Comments"}) {
+		t.Errorf("low = %v, want [Comments]", low)
+	}
+	if sumHigh != 11 {
+		t.Errorf("sumHigh = %d, want 11", sumHigh)
+	}
+	if sumMed != 7+15 {
+		t.Errorf("sumMed = %d, want %d", sumMed, 7+15)
+	}
+}
+
+func TestSetToMin(t *testing.T) {
+	widths := map[string]int{"A": 20, "B": 10}
+	setToMin([]string{"A", "B"}, widths)
+	for _, k := range []string{"A", "B"} {
+		if widths[k] != minColWidth {
+			t.Errorf("widths[%q] = %d, want %d", k, widths[k], minColWidth)
+		}
+	}
+}
+
+func TestScaleProportionally(t *testing.T) {
+	widths := map[string]int{"A": 20, "B": 10}
+	scaleProportionally([]string{"A", "B"}, widths, 15, 30)
+	// A: 20/30*15 = 10; B: 10/30*15 = 5
+	if widths["A"] != 10 {
+		t.Errorf("A = %d, want 10", widths["A"])
+	}
+	if widths["B"] != 5 {
+		t.Errorf("B = %d, want 5", widths["B"])
+	}
+}
+
+func TestScaleProportionally_Floor(t *testing.T) {
+	widths := map[string]int{"A": 1}
+	scaleProportionally([]string{"A"}, widths, 1, 100)
+	if widths["A"] != minColWidth {
+		t.Errorf("A = %d, want minColWidth (%d)", widths["A"], minColWidth)
+	}
+}
+
+func TestDistributeSurplus(t *testing.T) {
+	widths := map[string]int{"A": 20, "B": 10}
+	distributeSurplus([]string{"A", "B"}, widths, 15, 30)
+	// A: minColWidth + 20/30*15 = 3+10 = 13; B: minColWidth + 10/30*15 = 3+5 = 8
+	if widths["A"] != minColWidth+10 {
+		t.Errorf("A = %d, want %d", widths["A"], minColWidth+10)
+	}
+	if widths["B"] != minColWidth+5 {
+		t.Errorf("B = %d, want %d", widths["B"], minColWidth+5)
+	}
+}
+
+func TestComputeColWidths(t *testing.T) {
+	// columns covering all three priority tiers
+	cols := []string{"Course", "CrHrs", "Comments"}
+	prefCourse := preferredWidths["Course"]   // 11, HIGH
+	prefCrHrs := preferredWidths["CrHrs"]     // 7,  MED
+	prefComments := preferredWidths["Comments"] // 25, LOW
+
+	t.Run("termWidth=0 returns preferred", func(t *testing.T) {
+		w := computeColWidths(cols, 0)
+		if w["Course"] != prefCourse || w["CrHrs"] != prefCrHrs || w["Comments"] != prefComments {
+			t.Errorf("unexpected widths: %v", w)
+		}
+	})
+
+	t.Run("wide terminal returns preferred", func(t *testing.T) {
+		w := computeColWidths(cols, 9999)
+		if w["Course"] != prefCourse || w["CrHrs"] != prefCrHrs || w["Comments"] != prefComments {
+			t.Errorf("unexpected widths: %v", w)
+		}
+	})
+
+	t.Run("HIGH+MED fit, LOW gets surplus", func(t *testing.T) {
+		// available must be >= sumHigh+sumMed but < totalPreferred
+		// sumHigh=11, sumMed=7, prefComments=25
+		// target available = 11+7+10 = 28 (surplus of 10 for LOW)
+		// available = termWidth - outerBorderWidth - cellPadding*3
+		// 28 = termWidth - 2 - 6 => termWidth = 36
+		w := computeColWidths(cols, 36)
+		if w["Course"] != prefCourse {
+			t.Errorf("Course: got %d, want %d (preferred)", w["Course"], prefCourse)
+		}
+		if w["CrHrs"] != prefCrHrs {
+			t.Errorf("CrHrs: got %d, want %d (preferred)", w["CrHrs"], prefCrHrs)
+		}
+		if w["Comments"] <= minColWidth {
+			t.Errorf("Comments should be above minColWidth, got %d", w["Comments"])
+		}
+		if w["Comments"] >= prefComments {
+			t.Errorf("Comments should be below preferred, got %d", w["Comments"])
+		}
+	})
+
+	t.Run("only HIGH fits, MED scaled, LOW at min", func(t *testing.T) {
+		// remainAfterLow must be >= sumHigh but < sumHigh+sumMed
+		// sumHigh=11, sumMed=7; target remainAfterLow = 14
+		// remainAfterLow = available - lowMin = available - 1*3
+		// available = 14+3 = 17 = termWidth - 2 - 6 => termWidth = 25
+		w := computeColWidths(cols, 25)
+		if w["Course"] != prefCourse {
+			t.Errorf("Course: got %d, want %d (preferred)", w["Course"], prefCourse)
+		}
+		if w["CrHrs"] >= prefCrHrs {
+			t.Errorf("CrHrs should be scaled below preferred, got %d", w["CrHrs"])
+		}
+		if w["Comments"] != minColWidth {
+			t.Errorf("Comments: got %d, want minColWidth (%d)", w["Comments"], minColWidth)
+		}
+	})
+
+	t.Run("very narrow, HIGH scaled, MED+LOW at min", func(t *testing.T) {
+		// remainAfterLow < sumHigh (11)
+		// remainAfterLow = available - 3 < 11 => available < 14
+		// available = termWidth - 2 - 6 => termWidth < 22; use termWidth=20 => available=12
+		w := computeColWidths(cols, 20)
+		if w["Course"] >= prefCourse {
+			t.Errorf("Course should be scaled below preferred, got %d", w["Course"])
+		}
+		if w["CrHrs"] != minColWidth {
+			t.Errorf("CrHrs: got %d, want minColWidth (%d)", w["CrHrs"], minColWidth)
+		}
+		if w["Comments"] != minColWidth {
+			t.Errorf("Comments: got %d, want minColWidth (%d)", w["Comments"], minColWidth)
+		}
+	})
+
+	t.Run("unknown column uses defaults, no panic", func(t *testing.T) {
+		w := computeColWidths([]string{"MYSTERY"}, 0)
+		if w["MYSTERY"] != defaultColWidth {
+			t.Errorf("MYSTERY: got %d, want %d (defaultColWidth)", w["MYSTERY"], defaultColWidth)
+		}
+	})
+}
+
+// ---- key-handler tests ----
 
 func TestResultsTermNavKeys(t *testing.T) {
 	m := resultsModel{

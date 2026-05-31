@@ -144,33 +144,68 @@ func buildResultsTable(result query.Result, width, height, reserved int) table.M
 // computeColWidths returns column widths scaled to fit termWidth.
 // When termWidth is 0 (not yet known), preferred widths are returned as-is.
 func computeColWidths(cols []string, termWidth int) map[string]int {
+	widths, totalPreferred := buildPreferredWidths(cols)
+	if termWidth <= 0 {
+		return widths
+	}
+	available := calcAvailable(termWidth, len(cols))
+	if available >= totalPreferred {
+		return widths
+	}
+	high, med, low, sumHigh, sumMed := partitionByPriority(cols, widths)
+	lowMin := len(low) * minColWidth
+	remainAfterLow := available - lowMin
+	switch {
+	case remainAfterLow >= sumHigh+sumMed:
+		// HIGH + MEDIUM fit at preferred; distribute surplus to LOW proportionally.
+		sumLow := 0
+		for _, c := range low {
+			sumLow += widths[c]
+		}
+		distributeSurplus(low, widths, remainAfterLow-sumHigh-sumMed, sumLow)
+	case remainAfterLow >= sumHigh:
+		// HIGH fits at preferred; scale MEDIUM into remainder; LOW gets minimum.
+		setToMin(low, widths)
+		scaleProportionally(med, widths, remainAfterLow-sumHigh, sumMed)
+	default:
+		// Even HIGH doesn't fit; scale HIGH proportionally; LOW and MEDIUM get minimum.
+		setToMin(low, widths)
+		setToMin(med, widths)
+		scaleProportionally(high, widths, remainAfterLow, sumHigh)
+	}
+	return widths
+}
+
+// buildPreferredWidths returns a widths map initialised from preferredWidths (or
+// defaultColWidth for unknown columns) and the sum of those preferred widths.
+func buildPreferredWidths(cols []string) (map[string]int, int) {
 	widths := make(map[string]int, len(cols))
-	totalPreferred := 0
+	total := 0
 	for _, c := range cols {
 		w, ok := preferredWidths[c]
 		if !ok {
 			w = defaultColWidth
 		}
 		widths[c] = w
-		totalPreferred += w
+		total += w
 	}
+	return widths, total
+}
 
-	if termWidth <= 0 {
-		return widths
+// calcAvailable returns the usable pixel width after subtracting borders and
+// per-cell padding, floored so every column can fit at minColWidth.
+func calcAvailable(termWidth, numCols int) int {
+	available := termWidth - outerBorderWidth - cellPadding*numCols
+	if available < numCols*minColWidth {
+		available = numCols * minColWidth
 	}
+	return available
+}
 
-	available := termWidth - outerBorderWidth - cellPadding*len(cols)
-	if available < len(cols)*minColWidth {
-		available = len(cols) * minColWidth
-	}
-
-	if available >= totalPreferred {
-		return widths
-	}
-
-	// Partition columns by priority tier.
-	var highCols, medCols, lowCols []string
-	sumHigh, sumMed := 0, 0
+// partitionByPriority splits cols into high-, medium-, and low-priority slices
+// using columnPriority (defaultPriority for unknown columns) and returns the
+// sum of preferred widths for the high and medium groups.
+func partitionByPriority(cols []string, widths map[string]int) (high, med, low []string, sumHigh, sumMed int) {
 	for _, c := range cols {
 		p := columnPriority[c]
 		if p == 0 {
@@ -178,68 +213,50 @@ func computeColWidths(cols []string, termWidth int) map[string]int {
 		}
 		switch {
 		case p >= 3:
-			highCols = append(highCols, c)
+			high = append(high, c)
 			sumHigh += widths[c]
 		case p == 2:
-			medCols = append(medCols, c)
+			med = append(med, c)
 			sumMed += widths[c]
 		default:
-			lowCols = append(lowCols, c)
+			low = append(low, c)
 		}
 	}
+	return
+}
 
-	lowMin := len(lowCols) * minColWidth
-	remainAfterLow := available - lowMin
+// setToMin sets every column in cols to minColWidth in widths.
+func setToMin(cols []string, widths map[string]int) {
+	for _, c := range cols {
+		widths[c] = minColWidth
+	}
+}
 
-	switch {
-	case remainAfterLow >= sumHigh+sumMed:
-		// HIGH + MEDIUM fit at preferred; distribute surplus to LOW proportionally.
-		surplus := remainAfterLow - sumHigh - sumMed
-		sumLow := 0
-		for _, c := range lowCols {
-			sumLow += widths[c]
-		}
-		for _, c := range lowCols {
-			extra := 0
-			if sumLow > 0 {
-				extra = int(float64(widths[c]) * float64(surplus) / float64(sumLow))
-			}
-			widths[c] = minColWidth + extra
-		}
-		// HIGH and MEDIUM stay at preferred (already set).
-
-	case remainAfterLow >= sumHigh:
-		// HIGH fits at preferred; scale MEDIUM into remainder; LOW gets minimum.
-		for _, c := range lowCols {
-			widths[c] = minColWidth
-		}
-		medAvail := remainAfterLow - sumHigh
-		for _, c := range medCols {
-			scaled := int(float64(widths[c]) * float64(medAvail) / float64(sumMed))
+// scaleProportionally scales each column in cols to its proportional share of
+// budget (relative to sum), with a minColWidth floor. It mutates widths in place.
+func scaleProportionally(cols []string, widths map[string]int, budget, sum int) {
+	for _, c := range cols {
+		scaled := minColWidth
+		if sum > 0 {
+			scaled = int(float64(widths[c]) * float64(budget) / float64(sum))
 			if scaled < minColWidth {
 				scaled = minColWidth
 			}
-			widths[c] = scaled
 		}
-		// HIGH stays at preferred.
-
-	default:
-		// Even HIGH doesn't fit; scale HIGH proportionally; LOW and MEDIUM get minimum.
-		for _, c := range lowCols {
-			widths[c] = minColWidth
-		}
-		for _, c := range medCols {
-			widths[c] = minColWidth
-		}
-		for _, c := range highCols {
-			scaled := int(float64(widths[c]) * float64(remainAfterLow) / float64(sumHigh))
-			if scaled < minColWidth {
-				scaled = minColWidth
-			}
-			widths[c] = scaled
-		}
+		widths[c] = scaled
 	}
-	return widths
+}
+
+// distributeSurplus sets each column in cols to minColWidth plus a proportional
+// share of surplus (relative to sumCols). It mutates widths in place.
+func distributeSurplus(cols []string, widths map[string]int, surplus, sumCols int) {
+	for _, c := range cols {
+		extra := 0
+		if sumCols > 0 {
+			extra = int(float64(widths[c]) * float64(surplus) / float64(sumCols))
+		}
+		widths[c] = minColWidth + extra
+	}
 }
 
 func (m resultsModel) Init() tea.Cmd {
@@ -249,117 +266,140 @@ func (m resultsModel) Init() tea.Cmd {
 	return nil
 }
 
+func (m resultsModel) handleResize(msg tea.WindowSizeMsg) tea.Model {
+	m.width = msg.Width
+	m.height = msg.Height
+	if len(m.result.Columns) > 0 {
+		m.meta = renderMetadataBlock(m.queryType, m.result, m.params, m.width)
+		m.table = buildResultsTable(m.result, m.width, m.height, metaReservedLines(m.meta))
+	}
+	return m
+}
+
+func (m resultsModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if m.showDetail {
+		switch msg.String() {
+		case "d", "esc", "q":
+			m.showDetail = false
+		}
+		return m, nil
+	}
+	switch msg.String() {
+	case "esc", "q":
+		return m, func() tea.Msg { return backMsg{} }
+	case "h":
+		if term := m.params["term"]; term != "" {
+			prev := models.PrevTerm(term)
+			return m, func() tea.Msg { return changeTermMsg{term: prev} }
+		}
+	case "l":
+		if term := m.params["term"]; term != "" {
+			next := models.NextTerm(term)
+			return m, func() tea.Msg { return changeTermMsg{term: next} }
+		}
+	case "enter":
+		if m.queryType != "roster_view" && m.queryType != "person_search" {
+			break
+		}
+		row := m.table.SelectedRow()
+		if len(row) == 0 || row[0] == "" {
+			break
+		}
+		destType := "schedule_lookup"
+		if m.queryType == "person_search" {
+			destType = "instructor_lookup"
+		}
+		username, term := row[0], m.params["term"]
+		return m, func() tea.Msg {
+			return searchSubmittedMsg{
+				queryType: destType,
+				params:    map[string]string{"term": term, "username": username},
+			}
+		}
+	case "a":
+		switch m.queryType {
+		case "roster_view":
+			row := m.table.SelectedRow()
+			if len(row) <= 6 || row[6] == "" {
+				break
+			}
+			advisor, term := row[6], m.params["term"]
+			return m, func() tea.Msg {
+				return searchSubmittedMsg{
+					queryType: "instructor_lookup",
+					params:    map[string]string{"term": term, "username": advisor},
+				}
+			}
+		case "schedule_lookup":
+			if name := m.result.Metadata["advisor_name"]; name != "" {
+				term := m.params["term"]
+				return m, func() tea.Msg {
+					return advisorSearchMsg{advisorName: name, term: term}
+				}
+			}
+		}
+	case "r":
+		if m.queryType != "instructor_lookup" && m.queryType != "schedule_lookup" && m.queryType != "course_search" {
+			break
+		}
+		row := m.table.SelectedRow()
+		if len(row) == 0 || row[0] == "" {
+			break
+		}
+		courseID, term := row[0], m.params["term"]
+		return m, func() tea.Msg {
+			return searchSubmittedMsg{
+				queryType: "roster_view",
+				params:    map[string]string{"term": term, "course_id": courseID},
+			}
+		}
+	case "i":
+		if m.queryType != "course_search" {
+			break
+		}
+		row := m.table.SelectedRow()
+		if len(row) <= 3 || row[3] == "" {
+			break
+		}
+		term := m.params["term"]
+
+		// Extract instructor's username from "Last, First (username)" column
+		start := strings.LastIndex(row[3], "(")
+		end := strings.LastIndex(row[3], ")")
+		if start == -1 || end <= start {
+			break
+		}
+		username := row[3][start+1 : end]
+		return m, func() tea.Msg {
+			return searchSubmittedMsg{
+				queryType: "instructor_lookup",
+				params:    map[string]string{"term": term, "username": username},
+			}
+		}
+	case "ctrl+r":
+		qt, params := m.queryType, m.params
+		return m, func() tea.Msg {
+			return refreshCurrentQueryMsg{queryType: qt, params: params}
+		}
+	case "d":
+		if len(m.result.Columns) > 0 && len(m.table.SelectedRow()) > 0 {
+			m.showDetail = true
+			return m, nil
+		}
+	}
+
+	// Forward any other keys to the table
+	var cmd tea.Cmd
+	m.table, cmd = m.table.Update(msg)
+	return m, cmd
+}
+
 func (m resultsModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
-		m.width = msg.Width
-		m.height = msg.Height
-		if len(m.result.Columns) > 0 {
-			m.meta = renderMetadataBlock(m.queryType, m.result, m.params, m.width)
-			m.table = buildResultsTable(m.result, m.width, m.height, metaReservedLines(m.meta))
-		}
-		return m, nil
+		return m.handleResize(msg), nil
 	case tea.KeyMsg:
-		if m.showDetail {
-			switch msg.String() {
-			case "d", "esc", "q":
-				m.showDetail = false
-			}
-			return m, nil
-		}
-		switch msg.String() {
-		case "esc", "q":
-			return m, func() tea.Msg { return backMsg{} }
-		case "h":
-			if term := m.params["term"]; term != "" {
-				prev := models.PrevTerm(term)
-				return m, func() tea.Msg { return changeTermMsg{term: prev} }
-			}
-		case "l":
-			if term := m.params["term"]; term != "" {
-				next := models.NextTerm(term)
-				return m, func() tea.Msg { return changeTermMsg{term: next} }
-			}
-		case "enter":
-			if m.queryType == "roster_view" || m.queryType == "person_search" {
-				row := m.table.SelectedRow()
-				if len(row) > 0 && row[0] != "" {
-					username, term := row[0], m.params["term"]
-					destType := "schedule_lookup"
-					if m.queryType == "person_search" {
-						destType = "instructor_lookup"
-					}
-					return m, func() tea.Msg {
-						return searchSubmittedMsg{
-							queryType: destType,
-							params:    map[string]string{"term": term, "username": username},
-						}
-					}
-				}
-			}
-		case "a":
-			switch m.queryType {
-			case "roster_view":
-				row := m.table.SelectedRow()
-				if len(row) > 6 && row[6] != "" {
-					advisor, term := row[6], m.params["term"]
-					return m, func() tea.Msg {
-						return searchSubmittedMsg{
-							queryType: "instructor_lookup",
-							params:    map[string]string{"term": term, "username": advisor},
-						}
-					}
-				}
-			case "schedule_lookup":
-				if name := m.result.Metadata["advisor_name"]; name != "" {
-					term := m.params["term"]
-					return m, func() tea.Msg {
-						return advisorSearchMsg{advisorName: name, term: term}
-					}
-				}
-			}
-		case "r":
-			if m.queryType == "instructor_lookup" || m.queryType == "schedule_lookup" || m.queryType == "course_search" {
-				row := m.table.SelectedRow()
-				if len(row) > 0 && row[0] != "" {
-					courseID, term := row[0], m.params["term"]
-					return m, func() tea.Msg {
-						return searchSubmittedMsg{
-							queryType: "roster_view",
-							params:    map[string]string{"term": term, "course_id": courseID},
-						}
-					}
-				}
-			}
-		case "i":
-			if m.queryType == "course_search" {
-				row := m.table.SelectedRow()
-				if len(row) > 3 && row[3] != "" {
-					term := m.params["term"]
-					if start := strings.LastIndex(row[3], "("); start != -1 {
-						if end := strings.LastIndex(row[3], ")"); end > start {
-							username := row[3][start+1 : end]
-							return m, func() tea.Msg {
-								return searchSubmittedMsg{
-									queryType: "instructor_lookup",
-									params:    map[string]string{"term": term, "username": username},
-								}
-							}
-						}
-					}
-				}
-			}
-		case "ctrl+r":
-			qt, params := m.queryType, m.params
-			return m, func() tea.Msg {
-				return refreshCurrentQueryMsg{queryType: qt, params: params}
-			}
-		case "d":
-			if len(m.result.Columns) > 0 && len(m.table.SelectedRow()) > 0 {
-				m.showDetail = true
-				return m, nil
-			}
-		}
+		return m.handleKey(msg)
 	case spinner.TickMsg:
 		if m.loading {
 			var cmd tea.Cmd

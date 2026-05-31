@@ -3,6 +3,7 @@ package ui
 import (
 	"context"
 	"fmt"
+	"maps"
 	"strings"
 	"time"
 
@@ -31,6 +32,10 @@ const (
 	ScreenResults
 )
 
+func isAuthScreen(s Screen) bool {
+	return s == ScreenLogin || s == ScreenPassword || s == ScreenUsername || s == ScreenMFACode
+}
+
 type App struct {
 	screen         Screen
 	session        *auth.Session
@@ -58,7 +63,7 @@ func (a App) mainWidth() int {
 	if a.width <= 0 {
 		return 0
 	}
-	if a.screen == ScreenLogin || a.screen == ScreenPassword || a.screen == ScreenUsername || a.screen == ScreenMFACode {
+	if isAuthScreen(a.screen) {
 		return a.width
 	}
 	w := a.width - panelTotalWidth
@@ -298,9 +303,7 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return a, a.search.Init()
 
 	case searchSubmittedMsg:
-		a.results = newResultsModel()
-		a.screen = ScreenResults
-		return a, tea.Batch(a.results.Init(), executeQueryCmd(a.session, msg.queryType, msg.params, a.fixtures, a.config.JumpToRosterOnSingleResult))
+		return a.resetAndFetch(msg.queryType, msg.params, a.config.JumpToRosterOnSingleResult)
 
 	case advisorSearchMsg:
 		a.results = newResultsModel()
@@ -338,23 +341,13 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return a, nil
 
 	case refreshCurrentQueryMsg:
-		a.results = newResultsModel()
-		a.results.width = a.mainWidth()
-		a.results.height = a.height
-		return a, tea.Batch(a.results.Init(), executeQueryCmd(a.session, msg.queryType, msg.params, a.fixtures, false))
+		return a.resetAndFetch(msg.queryType, msg.params, false)
 
 	case changeTermMsg:
 		queryType := a.results.queryType
-		newParams := make(map[string]string, len(a.results.params))
-		for k, v := range a.results.params {
-			newParams[k] = v
-		}
+		newParams := maps.Clone(a.results.params)
 		newParams["term"] = msg.term
-		a.results = newResultsModel()
-		a.results.width = a.mainWidth()
-		a.results.height = a.height
-		a.screen = ScreenResults
-		return a, tea.Batch(a.results.Init(), executeQueryCmd(a.session, queryType, newParams, a.fixtures, false))
+		return a.resetAndFetch(queryType, newParams, false)
 
 	case backMsg:
 		a.screen = ScreenMenu
@@ -363,6 +356,16 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 
 	return a.delegateToScreen(msg)
+}
+
+// resetAndFetch clears the results model, preps for the results screen,
+// and batches results initialization and the desired query.
+func (a App) resetAndFetch(queryType string, params map[string]string, jumpToRoster bool) (tea.Model, tea.Cmd) {
+	a.results = newResultsModel()
+	a.results.width = a.mainWidth()
+	a.results.height = a.height
+	a.screen = ScreenResults
+	return a, tea.Batch(a.results.Init(), executeQueryCmd(a.session, queryType, params, a.fixtures, jumpToRoster))
 }
 
 func (a App) delegateToScreen(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -423,7 +426,7 @@ func (a App) View() string {
 	}
 
 	// Auth screens have no history panel.
-	if a.screen == ScreenLogin || a.screen == ScreenPassword || a.screen == ScreenUsername || a.screen == ScreenMFACode {
+	if isAuthScreen(a.screen) {
 		return lipgloss.Place(a.width, a.height, lipgloss.Left, lipgloss.Top, mainContent)
 	}
 
@@ -435,56 +438,21 @@ func executeQueryCmd(session *auth.Session, queryType string, params map[string]
 	return func() tea.Msg {
 		var c *client.Client
 		var err error
-		if fixtures != nil {
-			key := queryType + ":" + params["term"]
-			path, ok := fixtures[key]
-			if !ok {
-				path, ok = fixtures[queryType]
-			}
-			if !ok {
-				return errMsg{fmt.Errorf("no sample fixture available for query type: %s", queryType)}
-			}
-			c, err = client.NewFixture(path)
-		} else {
-			if session == nil {
-				return errMsg{fmt.Errorf("no active session")}
-			}
-			c, err = client.New(session.Cookies)
-		}
+
+		key := queryType + ":" + params["term"]
+		c, err = newClient(session, fixtures, key)
 		if err != nil {
-			return errMsg{err}
+			if fixtures != nil {
+				c, err = newClient(session, fixtures, queryType)
+			}
+			if err != nil {
+				return errMsg{err}
+			}
 		}
 
-		var q query.Query
-		switch queryType {
-		case "course_search":
-			q = &query.CourseSearch{
-				Term:       params["term"],
-				CourseCode: params["course_code"],
-				Instructor: params["instructor"],
-			}
-		case "schedule_lookup":
-			q = &query.ScheduleLookup{
-				Term:     params["term"],
-				Username: params["username"],
-			}
-		case "roster_view":
-			q = &query.RosterView{
-				Term:     params["term"],
-				CourseID: params["course_id"],
-			}
-		case "instructor_lookup":
-			q = &query.InstructorLookup{
-				Term:     params["term"],
-				Username: params["username"],
-			}
-		case "person_search":
-			q = &query.PersonSearch{
-				Term:     params["term"],
-				LastName: params["last_name"],
-			}
-		default:
-			return errMsg{fmt.Errorf("unknown query type: %s", queryType)}
+		q, err := buildQuery(queryType, params)
+		if err != nil {
+			return errMsg{err}
 		}
 
 		result, err := q.Execute(context.Background(), c)
@@ -505,6 +473,43 @@ func executeQueryCmd(session *auth.Session, queryType string, params map[string]
 		}
 		return queryResultMsg{result: result, queryType: queryType, params: params}
 	}
+}
+
+// buildQuery constructs a Query with the given parameters.
+func buildQuery(queryType string, params map[string]string) (query.Query, error) {
+	var q query.Query
+	switch queryType {
+	case "course_search":
+		q = &query.CourseSearch{
+			Term:       params["term"],
+			CourseCode: params["course_code"],
+			Instructor: params["instructor"],
+		}
+	case "schedule_lookup":
+		q = &query.ScheduleLookup{
+			Term:     params["term"],
+			Username: params["username"],
+		}
+	case "roster_view":
+		q = &query.RosterView{
+			Term:     params["term"],
+			CourseID: params["course_id"],
+		}
+	case "instructor_lookup":
+		q = &query.InstructorLookup{
+			Term:     params["term"],
+			Username: params["username"],
+		}
+	case "person_search":
+		q = &query.PersonSearch{
+			Term:     params["term"],
+			LastName: params["last_name"],
+		}
+	default:
+		return nil, fmt.Errorf("unknown query type: %s", queryType)
+	}
+
+	return q, nil
 }
 
 // fetchDefaultTermCmd fetches reg-sched.pl's available terms and reports the
@@ -568,21 +573,11 @@ func advisorSearchCmd(session *auth.Session, advisorName, term string, fixtures 
 		lastName := parts[len(parts)-1]
 		firstName := strings.Join(parts[:len(parts)-1], " ")
 
+		key := "person_search"
 		var c *client.Client
 		var err error
-		if fixtures != nil {
-			key := "person_search"
-			path, ok := fixtures[key]
-			if !ok {
-				return errMsg{fmt.Errorf("no fixture available for person_search")}
-			}
-			c, err = client.NewFixture(path)
-		} else {
-			if session == nil {
-				return errMsg{fmt.Errorf("no active session")}
-			}
-			c, err = client.New(session.Cookies)
-		}
+
+		c, err = newClient(session, fixtures, key)
 		if err != nil {
 			return errMsg{err}
 		}
@@ -620,6 +615,29 @@ func advisorSearchCmd(session *auth.Session, advisorName, term string, fixtures 
 			}
 		}
 	}
+}
+
+// newClient creates a client backed by a live session or a fixture file.
+func newClient(session *auth.Session, fixtures map[string]string, fixtureKey string) (*client.Client, error) {
+	var c *client.Client
+	var err error
+	if fixtures != nil {
+		path, ok := fixtures[fixtureKey]
+		if !ok {
+			return c, fmt.Errorf("no fixture available for %s", fixtureKey)
+		}
+		c, err = client.NewFixture(path)
+	} else {
+		if session == nil {
+			return c, fmt.Errorf("no active session")
+		}
+		c, err = client.New(session.Cookies)
+	}
+	if err != nil {
+		return c, err
+	}
+
+	return c, nil
 }
 
 // isCredentialError reports whether err is Microsoft rejecting the account or
