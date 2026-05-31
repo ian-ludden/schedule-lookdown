@@ -447,36 +447,9 @@ func executeQueryCmd(session *auth.Session, queryType string, params map[string]
 			}
 		}
 
-		var q query.Query
-		switch queryType {
-		case "course_search":
-			q = &query.CourseSearch{
-				Term:       params["term"],
-				CourseCode: params["course_code"],
-				Instructor: params["instructor"],
-			}
-		case "schedule_lookup":
-			q = &query.ScheduleLookup{
-				Term:     params["term"],
-				Username: params["username"],
-			}
-		case "roster_view":
-			q = &query.RosterView{
-				Term:     params["term"],
-				CourseID: params["course_id"],
-			}
-		case "instructor_lookup":
-			q = &query.InstructorLookup{
-				Term:     params["term"],
-				Username: params["username"],
-			}
-		case "person_search":
-			q = &query.PersonSearch{
-				Term:     params["term"],
-				LastName: params["last_name"],
-			}
-		default:
-			return errMsg{fmt.Errorf("unknown query type: %s", queryType)}
+		q, err := buildQuery(queryType, params)
+		if err != nil {
+			return errMsg{err}
 		}
 
 		result, err := q.Execute(context.Background(), c)
@@ -497,6 +470,43 @@ func executeQueryCmd(session *auth.Session, queryType string, params map[string]
 		}
 		return queryResultMsg{result: result, queryType: queryType, params: params}
 	}
+}
+
+// buildQuery constructs a Query with the given parameters.
+func buildQuery(queryType string, params map[string]string) (query.Query, error) {
+	var q query.Query
+	switch queryType {
+	case "course_search":
+		q = &query.CourseSearch{
+			Term:       params["term"],
+			CourseCode: params["course_code"],
+			Instructor: params["instructor"],
+		}
+	case "schedule_lookup":
+		q = &query.ScheduleLookup{
+			Term:     params["term"],
+			Username: params["username"],
+		}
+	case "roster_view":
+		q = &query.RosterView{
+			Term:     params["term"],
+			CourseID: params["course_id"],
+		}
+	case "instructor_lookup":
+		q = &query.InstructorLookup{
+			Term:     params["term"],
+			Username: params["username"],
+		}
+	case "person_search":
+		q = &query.PersonSearch{
+			Term:     params["term"],
+			LastName: params["last_name"],
+		}
+	default:
+		return nil, fmt.Errorf("unknown query type: %s", queryType)
+	}
+
+	return q, nil
 }
 
 // fetchDefaultTermCmd fetches reg-sched.pl's available terms and reports the
