@@ -266,117 +266,140 @@ func (m resultsModel) Init() tea.Cmd {
 	return nil
 }
 
+func (m resultsModel) handleResize(msg tea.WindowSizeMsg) tea.Model {
+	m.width = msg.Width
+	m.height = msg.Height
+	if len(m.result.Columns) > 0 {
+		m.meta = renderMetadataBlock(m.queryType, m.result, m.params, m.width)
+		m.table = buildResultsTable(m.result, m.width, m.height, metaReservedLines(m.meta))
+	}
+	return m
+}
+
+func (m resultsModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if m.showDetail {
+		switch msg.String() {
+		case "d", "esc", "q":
+			m.showDetail = false
+		}
+		return m, nil
+	}
+	switch msg.String() {
+	case "esc", "q":
+		return m, func() tea.Msg { return backMsg{} }
+	case "h":
+		if term := m.params["term"]; term != "" {
+			prev := models.PrevTerm(term)
+			return m, func() tea.Msg { return changeTermMsg{term: prev} }
+		}
+	case "l":
+		if term := m.params["term"]; term != "" {
+			next := models.NextTerm(term)
+			return m, func() tea.Msg { return changeTermMsg{term: next} }
+		}
+	case "enter":
+		if m.queryType != "roster_view" && m.queryType != "person_search" {
+			break
+		}
+		row := m.table.SelectedRow()
+		if len(row) == 0 || row[0] == "" {
+			break
+		}
+		destType := "schedule_lookup"
+		if m.queryType == "person_search" {
+			destType = "instructor_lookup"
+		}
+		username, term := row[0], m.params["term"]
+		return m, func() tea.Msg {
+			return searchSubmittedMsg{
+				queryType: destType,
+				params:    map[string]string{"term": term, "username": username},
+			}
+		}
+	case "a":
+		switch m.queryType {
+		case "roster_view":
+			row := m.table.SelectedRow()
+			if len(row) <= 6 || row[6] == "" {
+				break
+			}
+			advisor, term := row[6], m.params["term"]
+			return m, func() tea.Msg {
+				return searchSubmittedMsg{
+					queryType: "instructor_lookup",
+					params:    map[string]string{"term": term, "username": advisor},
+				}
+			}
+		case "schedule_lookup":
+			if name := m.result.Metadata["advisor_name"]; name != "" {
+				term := m.params["term"]
+				return m, func() tea.Msg {
+					return advisorSearchMsg{advisorName: name, term: term}
+				}
+			}
+		}
+	case "r":
+		if m.queryType != "instructor_lookup" && m.queryType != "schedule_lookup" && m.queryType != "course_search" {
+			break
+		}
+		row := m.table.SelectedRow()
+		if len(row) == 0 || row[0] == "" {
+			break
+		}
+		courseID, term := row[0], m.params["term"]
+		return m, func() tea.Msg {
+			return searchSubmittedMsg{
+				queryType: "roster_view",
+				params:    map[string]string{"term": term, "course_id": courseID},
+			}
+		}
+	case "i":
+		if m.queryType != "course_search" {
+			break
+		}
+		row := m.table.SelectedRow()
+		if len(row) <= 3 || row[3] == "" {
+			break
+		}
+		term := m.params["term"]
+
+		// Extract instructor's username from "Last, First (username)" column
+		start := strings.LastIndex(row[3], "(")
+		end := strings.LastIndex(row[3], ")")
+		if start == -1 || end <= start {
+			break
+		}
+		username := row[3][start+1 : end]
+		return m, func() tea.Msg {
+			return searchSubmittedMsg{
+				queryType: "instructor_lookup",
+				params:    map[string]string{"term": term, "username": username},
+			}
+		}
+	case "ctrl+r":
+		qt, params := m.queryType, m.params
+		return m, func() tea.Msg {
+			return refreshCurrentQueryMsg{queryType: qt, params: params}
+		}
+	case "d":
+		if len(m.result.Columns) > 0 && len(m.table.SelectedRow()) > 0 {
+			m.showDetail = true
+			return m, nil
+		}
+	}
+
+	// Forward any other keys to the table
+	var cmd tea.Cmd
+	m.table, cmd = m.table.Update(msg)
+	return m, cmd
+}
+
 func (m resultsModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
-		m.width = msg.Width
-		m.height = msg.Height
-		if len(m.result.Columns) > 0 {
-			m.meta = renderMetadataBlock(m.queryType, m.result, m.params, m.width)
-			m.table = buildResultsTable(m.result, m.width, m.height, metaReservedLines(m.meta))
-		}
-		return m, nil
+		return m.handleResize(msg), nil
 	case tea.KeyMsg:
-		if m.showDetail {
-			switch msg.String() {
-			case "d", "esc", "q":
-				m.showDetail = false
-			}
-			return m, nil
-		}
-		switch msg.String() {
-		case "esc", "q":
-			return m, func() tea.Msg { return backMsg{} }
-		case "h":
-			if term := m.params["term"]; term != "" {
-				prev := models.PrevTerm(term)
-				return m, func() tea.Msg { return changeTermMsg{term: prev} }
-			}
-		case "l":
-			if term := m.params["term"]; term != "" {
-				next := models.NextTerm(term)
-				return m, func() tea.Msg { return changeTermMsg{term: next} }
-			}
-		case "enter":
-			if m.queryType == "roster_view" || m.queryType == "person_search" {
-				row := m.table.SelectedRow()
-				if len(row) > 0 && row[0] != "" {
-					username, term := row[0], m.params["term"]
-					destType := "schedule_lookup"
-					if m.queryType == "person_search" {
-						destType = "instructor_lookup"
-					}
-					return m, func() tea.Msg {
-						return searchSubmittedMsg{
-							queryType: destType,
-							params:    map[string]string{"term": term, "username": username},
-						}
-					}
-				}
-			}
-		case "a":
-			switch m.queryType {
-			case "roster_view":
-				row := m.table.SelectedRow()
-				if len(row) > 6 && row[6] != "" {
-					advisor, term := row[6], m.params["term"]
-					return m, func() tea.Msg {
-						return searchSubmittedMsg{
-							queryType: "instructor_lookup",
-							params:    map[string]string{"term": term, "username": advisor},
-						}
-					}
-				}
-			case "schedule_lookup":
-				if name := m.result.Metadata["advisor_name"]; name != "" {
-					term := m.params["term"]
-					return m, func() tea.Msg {
-						return advisorSearchMsg{advisorName: name, term: term}
-					}
-				}
-			}
-		case "r":
-			if m.queryType == "instructor_lookup" || m.queryType == "schedule_lookup" || m.queryType == "course_search" {
-				row := m.table.SelectedRow()
-				if len(row) > 0 && row[0] != "" {
-					courseID, term := row[0], m.params["term"]
-					return m, func() tea.Msg {
-						return searchSubmittedMsg{
-							queryType: "roster_view",
-							params:    map[string]string{"term": term, "course_id": courseID},
-						}
-					}
-				}
-			}
-		case "i":
-			if m.queryType == "course_search" {
-				row := m.table.SelectedRow()
-				if len(row) > 3 && row[3] != "" {
-					term := m.params["term"]
-					if start := strings.LastIndex(row[3], "("); start != -1 {
-						if end := strings.LastIndex(row[3], ")"); end > start {
-							username := row[3][start+1 : end]
-							return m, func() tea.Msg {
-								return searchSubmittedMsg{
-									queryType: "instructor_lookup",
-									params:    map[string]string{"term": term, "username": username},
-								}
-							}
-						}
-					}
-				}
-			}
-		case "ctrl+r":
-			qt, params := m.queryType, m.params
-			return m, func() tea.Msg {
-				return refreshCurrentQueryMsg{queryType: qt, params: params}
-			}
-		case "d":
-			if len(m.result.Columns) > 0 && len(m.table.SelectedRow()) > 0 {
-				m.showDetail = true
-				return m, nil
-			}
-		}
+		return m.handleKey(msg)
 	case spinner.TickMsg:
 		if m.loading {
 			var cmd tea.Cmd
