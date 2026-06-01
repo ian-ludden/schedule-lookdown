@@ -291,6 +291,17 @@ func (m resultsModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	m.termWarning = ""
 	switch msg.String() {
 	case "esc", "q":
+		// A section roster reached via the section picker returns to the picker
+		// rather than all the way back to the menu.
+		if m.queryType == "roster_view" && m.params["from_sections"] == "1" {
+			term, base := m.params["term"], baseCourse(m.params["course_id"])
+			return m, func() tea.Msg {
+				return searchSubmittedMsg{
+					queryType: "roster_view",
+					params:    map[string]string{"term": term, "course_id": base},
+				}
+			}
+		}
 		return m, func() tea.Msg { return backMsg{} }
 	case "h":
 		if term := m.params["term"]; term != "" {
@@ -307,6 +318,21 @@ func (m resultsModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, func() tea.Msg { return changeTermMsg{term: next} }
 		}
 	case "enter":
+		// On the section picker, enter drills into the highlighted section's
+		// roster, tagged so esc returns here and 's' can toggle to combined.
+		if m.queryType == "roster_view" && m.result.Mode == query.ModeSections {
+			row := m.table.SelectedRow()
+			if len(row) == 0 || row[0] == "" {
+				break
+			}
+			courseID, term := row[0], m.params["term"]
+			return m, func() tea.Msg {
+				return searchSubmittedMsg{
+					queryType: "roster_view",
+					params:    map[string]string{"term": term, "course_id": courseID, "from_sections": "1"},
+				}
+			}
+		}
 		if m.queryType != "roster_view" && m.queryType != "person_search" {
 			break
 		}
@@ -385,6 +411,43 @@ func (m resultsModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				params:    map[string]string{"term": term, "username": username},
 			}
 		}
+	case "s":
+		// Toggle a single-section roster to/from the all-sections combined roster.
+		// Only meaningful on an actual roster (not the section picker).
+		if m.queryType != "roster_view" || m.result.Mode == query.ModeSections {
+			break
+		}
+		term, fromSections := m.params["term"], m.params["from_sections"]
+		var params map[string]string
+		if m.params["combined"] == "1" {
+			// Combined → back to the previously selected section.
+			params = map[string]string{"term": term, "course_id": m.params["selected_section"], "from_sections": fromSections}
+		} else {
+			// Single section → combined; remember which section to return to.
+			params = map[string]string{
+				"term":             term,
+				"course_id":        baseCourse(m.params["course_id"]),
+				"combined":         "1",
+				"selected_section": m.params["course_id"],
+				"from_sections":    fromSections,
+			}
+		}
+		return m, func() tea.Msg {
+			return searchSubmittedMsg{queryType: "roster_view", params: params}
+		}
+	case "c":
+		// "Change section" jumps from a roster back to the section picker for the
+		// course. Only meaningful on an actual roster, not the picker itself.
+		if m.queryType != "roster_view" || m.result.Mode == query.ModeSections {
+			break
+		}
+		term, base := m.params["term"], baseCourse(m.params["course_id"])
+		return m, func() tea.Msg {
+			return searchSubmittedMsg{
+				queryType: "roster_view",
+				params:    map[string]string{"term": term, "course_id": base},
+			}
+		}
 	case "ctrl+r":
 		qt, params := m.queryType, m.params
 		return m, func() tea.Msg {
@@ -461,6 +524,13 @@ func metadataContent(queryType string, result query.Result, params map[string]st
 			add("Advisor", meta["advisor_name"])
 		}
 	case "roster_view":
+		if result.Mode == query.ModeSections {
+			add("Title", meta["title"])
+			if n := meta["sections"]; n != "" {
+				add("Sections", n)
+			}
+			return strings.Join(parts, " │ ")
+		}
 		add("Title", meta["title"])
 		add("CRN", meta["crn"])
 		add("Instructor", meta["instructor"])
@@ -470,6 +540,9 @@ func metadataContent(queryType string, result query.Result, params map[string]st
 		add("Schedule", meta["schedule"])
 		add("Comments", meta["comments"])
 		add("Final Exam", meta["final_exam"])
+		// "Sections" appears only on the combined roster, where the metadata layer
+		// populates it; single-section rosters omit it.
+		add("Sections", meta["sections"])
 	case "course_search":
 		term := params["course_code"]
 		if term == "" {
@@ -498,6 +571,12 @@ func pluralize(n int, singular, plural string) string {
 		return fmt.Sprintf("1 %s", singular)
 	}
 	return fmt.Sprintf("%d %s", n, plural)
+}
+
+// baseCourse strips a section suffix from a course id, e.g. "CSSE474-02" →
+// "CSSE474". A bare code is returned unchanged.
+func baseCourse(id string) string {
+	return strings.SplitN(id, "-", 2)[0]
 }
 
 func queryResultTitle(queryType string, params map[string]string) string {
@@ -548,6 +627,15 @@ func (m resultsModel) View() string {
 		title += " - " + advisorID
 	}
 
+	if m.queryType == "roster_view" {
+		switch {
+		case m.result.Mode == query.ModeSections:
+			title += " (sections)"
+		case m.params["combined"] == "1":
+			title += " (all sections)"
+		}
+	}
+
 	if term := m.params["term"]; term != "" {
 		title += " — " + models.TermDisplayName(term)
 	}
@@ -567,7 +655,14 @@ func (m resultsModel) View() string {
 	help := "↑/↓ navigate • h/l prev/next term • d: detail • ctrl+r refresh • esc/q back"
 	switch m.queryType {
 	case "roster_view":
-		help += " • enter: view schedule • a: view advisor schedule"
+		switch {
+		case m.result.Mode == query.ModeSections:
+			help += " • enter: view section roster"
+		case m.params["combined"] == "1":
+			help += " • enter: view schedule • a: view advisor schedule • s: show selected section • c: change section"
+		default:
+			help += " • enter: view schedule • a: view advisor schedule • s: combine sections"
+		}
 	case "course_search":
 		help += " • r: view roster • i: view instructor schedule"
 	case "instructor_lookup":

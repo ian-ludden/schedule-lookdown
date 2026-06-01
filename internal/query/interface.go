@@ -18,4 +18,13 @@ type Result struct {
 	Columns  []string
 	Rows     [][]string
 	Metadata map[string]string // optional extra info, e.g. "advisor"
+	// Mode discriminates how the UI should render the result. "" is a normal
+	// table/roster; "sections" marks a Roster View section picker (a course-list
+	// table whose rows are sections to drill into).
+	Mode string
 }
+
+// Result modes.
+const (
+	ModeSections = "sections"
+)

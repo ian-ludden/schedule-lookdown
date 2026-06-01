@@ -518,6 +518,7 @@ func buildQuery(queryType string, params map[string]string) (query.Query, error)
 		q = &query.RosterView{
 			Term:     params["term"],
 			CourseID: params["course_id"],
+			Combined: params["combined"] == "1",
 		}
 	case "instructor_lookup":
 		q = &query.InstructorLookup{
