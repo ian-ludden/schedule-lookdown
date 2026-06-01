@@ -43,7 +43,7 @@ func TestLoadSamplesReachesMenuAndQueries(t *testing.T) {
 	fixtures := map[string]string{
 		"schedule_lookup": "../../sample-responses/sample-student.html",
 	}
-	app := NewApp(nil, config.Default(), ScreenMenu, fixtures)
+	app := NewApp(nil, config.Default(), ScreenMenu, fixtures, nil)
 	if app.screen != ScreenMenu {
 		t.Fatalf("fixture mode landed on screen %v, want ScreenMenu", app.screen)
 	}
@@ -73,7 +73,7 @@ func TestAdvisorSearchCmdSingleMatch(t *testing.T) {
 	fixtures := map[string]string{
 		"person_search": "../../sample-responses/sample-lastname-search.html",
 	}
-	cmd := advisorSearchCmd(nil, "Robin Vale", "202630", fixtures)
+	cmd := advisorSearchCmd(nil, "Robin Vale", "202630", fixtures, nil)
 	msg := cmd()
 
 	ss, ok := msg.(searchSubmittedMsg)
@@ -96,7 +96,7 @@ func TestAdvisorSearchIntegration(t *testing.T) {
 		"person_search":     "../../sample-responses/sample-lastname-search.html",
 		"instructor_lookup": "../../sample-responses/sample-instructor.html",
 	}
-	app := NewApp(nil, config.Default(), ScreenResults, fixtures)
+	app := NewApp(nil, config.Default(), ScreenResults, fixtures, nil)
 
 	// Step 1: advisorSearchMsg → batch contains advisorSearchCmd result
 	model, cmd1 := app.Update(advisorSearchMsg{advisorName: "Robin Vale",
@@ -144,7 +144,7 @@ func TestAppTermNavIntegration(t *testing.T) {
 	fixtures := map[string]string{
 		"schedule_lookup": "../../sample-responses/sample-student.html",
 	}
-	app := NewApp(nil, config.Default(), ScreenResults, fixtures)
+	app := NewApp(nil, config.Default(), ScreenResults, fixtures, nil)
 	app.results = newResultsModelWithData(
 		query.Result{
 			Columns: []string{"Course", "CRN"},

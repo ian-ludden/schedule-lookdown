@@ -3,6 +3,7 @@ package ui
 import (
 	"context"
 	"fmt"
+	"log"
 	"maps"
 	"strings"
 	"time"
@@ -43,6 +44,7 @@ type App struct {
 	latestTerm     string // furthest-future term from reg-sched.pl; "" until fetched
 	storedUsername string
 	fixtures       map[string]string // query type → sample file path; nil means use real HTTP
+	logger         *log.Logger       // nil unless --debug was passed
 	width          int
 	height         int
 	login          loginModel
@@ -73,12 +75,13 @@ func (a App) mainWidth() int {
 	return w
 }
 
-func NewApp(session *auth.Session, cfg config.Config, initial Screen, fixtures map[string]string) App {
+func NewApp(session *auth.Session, cfg config.Config, initial Screen, fixtures map[string]string, logger *log.Logger) App {
 	app := App{
 		screen:         initial,
 		session:        session,
 		config:         cfg,
 		fixtures:       fixtures,
+		logger:         logger,
 		login:          newLoginModel(),
 		passwordPrompt: newPasswordModel(),
 		menu:           newMenuModel(),
@@ -134,7 +137,7 @@ func (a App) maybeFetchTermsCmd() tea.Cmd {
 	if a.fixtureMode() || a.session == nil {
 		return nil
 	}
-	return fetchDefaultTermCmd(a.session)
+	return fetchDefaultTermCmd(a.session, a.logger)
 }
 
 func (a App) Init() tea.Cmd {
@@ -310,7 +313,7 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case advisorSearchMsg:
 		a.results = newResultsModel()
 		a.screen = ScreenResults
-		return a, tea.Batch(a.results.Init(), advisorSearchCmd(a.session, msg.advisorName, msg.term, a.fixtures))
+		return a, tea.Batch(a.results.Init(), advisorSearchCmd(a.session, msg.advisorName, msg.term, a.fixtures, a.logger))
 
 	case queryResultMsg:
 		a.results = newResultsModelWithData(msg.result, msg.queryType, msg.params, a.mainWidth(), a.height, a.latestTerm)
@@ -368,7 +371,7 @@ func (a App) resetAndFetch(queryType string, params map[string]string, jumpToRos
 	a.results.height = a.height
 	a.results.latestTerm = a.latestTerm
 	a.screen = ScreenResults
-	return a, tea.Batch(a.results.Init(), executeQueryCmd(a.session, queryType, params, a.fixtures, jumpToRoster))
+	return a, tea.Batch(a.results.Init(), executeQueryCmd(a.session, queryType, params, a.fixtures, jumpToRoster, a.logger))
 }
 
 func (a App) delegateToScreen(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -437,31 +440,49 @@ func (a App) View() string {
 	return lipgloss.JoinHorizontal(lipgloss.Top, placed, a.historyPanel.View())
 }
 
-func executeQueryCmd(session *auth.Session, queryType string, params map[string]string, fixtures map[string]string, jumpToRoster bool) tea.Cmd {
+func executeQueryCmd(session *auth.Session, queryType string, params map[string]string, fixtures map[string]string, jumpToRoster bool, logger *log.Logger) tea.Cmd {
 	return func() tea.Msg {
+		if logger != nil {
+			logger.Printf("executeQuery: type=%s params=%v", queryType, params)
+		}
+
 		var c *client.Client
 		var err error
 
 		key := queryType + ":" + params["term"]
-		c, err = newClient(session, fixtures, key)
+		c, err = newClient(session, fixtures, key, logger)
 		if err != nil {
 			if fixtures != nil {
-				c, err = newClient(session, fixtures, queryType)
+				c, err = newClient(session, fixtures, queryType, logger)
 			}
 			if err != nil {
+				if logger != nil {
+					logger.Printf("executeQuery: client error: %v", err)
+				}
 				return errMsg{err}
 			}
 		}
 
 		q, err := buildQuery(queryType, params)
 		if err != nil {
+			if logger != nil {
+				logger.Printf("executeQuery: buildQuery error: %v", err)
+			}
 			return errMsg{err}
 		}
 
 		result, err := q.Execute(context.Background(), c)
 		if err != nil {
+			if logger != nil {
+				logger.Printf("executeQuery: execute error: %v", err)
+			}
 			return errMsg{err}
 		}
+
+		if logger != nil {
+			logger.Printf("executeQuery: result cols=%v rows=%d metadata=%v", result.Columns, len(result.Rows), result.Metadata)
+		}
+
 		// When enabled, a single course-search hit jumps straight to that
 		// course's roster instead of showing a one-row table. row[0] is the
 		// course id, matching the 'r' key course→roster navigation in results.go.
@@ -518,12 +539,12 @@ func buildQuery(queryType string, params map[string]string) (query.Query, error)
 // fetchDefaultTermCmd fetches reg-sched.pl's available terms and reports the
 // furthest-future one via termsLoadedMsg. Any failure yields an empty latest so
 // the app silently falls back to the computed current term.
-func fetchDefaultTermCmd(session *auth.Session) tea.Cmd {
+func fetchDefaultTermCmd(session *auth.Session, logger *log.Logger) tea.Cmd {
 	return func() tea.Msg {
 		if session == nil {
 			return termsLoadedMsg{}
 		}
-		c, err := client.New(session.Cookies)
+		c, err := client.New(session.Cookies, logger)
 		if err != nil {
 			return termsLoadedMsg{}
 		}
@@ -567,7 +588,7 @@ type advisorSearchMsg struct{ advisorName, term string }
 // advisorSearchCmd looks up the advisor's username via a person search by last
 // name, filters by first name, and either auto-navigates (1 match) or returns
 // a disambiguation table (2+ matches).
-func advisorSearchCmd(session *auth.Session, advisorName, term string, fixtures map[string]string) tea.Cmd {
+func advisorSearchCmd(session *auth.Session, advisorName, term string, fixtures map[string]string, logger *log.Logger) tea.Cmd {
 	return func() tea.Msg {
 		parts := strings.Fields(advisorName)
 		if len(parts) == 0 {
@@ -576,36 +597,63 @@ func advisorSearchCmd(session *auth.Session, advisorName, term string, fixtures 
 		lastName := parts[len(parts)-1]
 		firstName := strings.Join(parts[:len(parts)-1], " ")
 
+		if logger != nil {
+			logger.Printf("advisorSearch: name=%q term=%s -> lastName=%q firstName=%q", advisorName, term, lastName, firstName)
+		}
+
 		key := "person_search"
 		var c *client.Client
 		var err error
 
-		c, err = newClient(session, fixtures, key)
+		c, err = newClient(session, fixtures, key, logger)
 		if err != nil {
+			if logger != nil {
+				logger.Printf("advisorSearch: client error: %v", err)
+			}
 			return errMsg{err}
 		}
 
 		q := &query.PersonSearch{Term: term, LastName: strings.ToLower(lastName)}
+		if logger != nil {
+			logger.Printf("advisorSearch: PersonSearch params: term=%s lastName=%s (sends id=%s*)", term, strings.ToLower(lastName), strings.ToLower(lastName))
+		}
 		result, err := q.Execute(context.Background(), c)
 		if err != nil {
+			if logger != nil {
+				logger.Printf("advisorSearch: PersonSearch error: %v", err)
+			}
 			return errMsg{err}
 		}
 
-		// Filter by first name match (NAME is column 2).
+		if logger != nil {
+			logger.Printf("advisorSearch: PersonSearch returned %d rows, cols=%v", len(result.Rows), result.Columns)
+			for i, row := range result.Rows {
+				logger.Printf("advisorSearch: row[%d]=%v", i, row)
+			}
+		}
+
+		// Filter by first name match (NAME is column 1: [USERNAME, NAME, BANNER ID, ...]).
 		var matches [][]string
 		for _, row := range result.Rows {
-			if len(row) < 3 {
+			if len(row) < 2 {
 				continue
 			}
-			if firstName == "" || strings.Contains(strings.ToLower(row[2]), strings.ToLower(firstName)) {
+			if firstName == "" || strings.Contains(strings.ToLower(row[1]), strings.ToLower(firstName)) {
 				matches = append(matches, row)
 			}
+		}
+
+		if logger != nil {
+			logger.Printf("advisorSearch: %d matches after filtering by firstName=%q", len(matches), firstName)
 		}
 
 		switch len(matches) {
 		case 0:
 			return errMsg{fmt.Errorf("no person named %q found", advisorName)}
 		case 1:
+			if logger != nil {
+				logger.Printf("advisorSearch: single match, looking up instructor username=%s", matches[0][0])
+			}
 			return searchSubmittedMsg{
 				queryType: "instructor_lookup",
 				params:    map[string]string{"term": term, "username": matches[0][0]},
@@ -621,7 +669,7 @@ func advisorSearchCmd(session *auth.Session, advisorName, term string, fixtures 
 }
 
 // newClient creates a client backed by a live session or a fixture file.
-func newClient(session *auth.Session, fixtures map[string]string, fixtureKey string) (*client.Client, error) {
+func newClient(session *auth.Session, fixtures map[string]string, fixtureKey string, logger *log.Logger) (*client.Client, error) {
 	var c *client.Client
 	var err error
 	if fixtures != nil {
@@ -634,7 +682,7 @@ func newClient(session *auth.Session, fixtures map[string]string, fixtureKey str
 		if session == nil {
 			return c, fmt.Errorf("no active session")
 		}
-		c, err = client.New(session.Cookies)
+		c, err = client.New(session.Cookies, logger)
 	}
 	if err != nil {
 		return c, err

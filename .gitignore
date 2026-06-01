@@ -41,3 +41,5 @@ example-response.html
 # .idea/
 # .vscode/
 
+# Debugging logs
+*.log
