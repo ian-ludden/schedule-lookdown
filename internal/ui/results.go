@@ -73,6 +73,8 @@ type resultsModel struct {
 	meta        string // styled metadata header rendered above the table
 	latestTerm  string // furthest-future available term; "" means no upper bound
 	termWarning string // transient message shown when forward nav is blocked
+	flashMsg    string // transient feedback (e.g. roster download result)
+	flashErr    bool   // styles flashMsg as an error when true
 	err         error
 	spinner     spinner.Model
 	loading     bool
@@ -286,9 +288,10 @@ func (m resultsModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	}
-	// Any key clears a transient term-navigation warning so it disappears on the
-	// next interaction.
+	// Any key clears the transient term-navigation warning and download flash so
+	// they disappear on the next interaction.
 	m.termWarning = ""
+	m.flashMsg = ""
 	switch msg.String() {
 	case "esc", "q":
 		// A section roster reached via the section picker returns to the picker
@@ -447,6 +450,19 @@ func (m resultsModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				queryType: "roster_view",
 				params:    map[string]string{"term": term, "course_id": base},
 			}
+		}
+	case "ctrl+s":
+		// Download the roster CSV. Only meaningful on an actual roster, not the
+		// section picker. App.Update has the session/config to perform the POST.
+		if m.queryType != "roster_view" || m.result.Mode == query.ModeSections {
+			break
+		}
+		courseID, term := m.params["course_id"], m.params["term"]
+		if courseID == "" {
+			break
+		}
+		return m, func() tea.Msg {
+			return downloadRosterMsg{courseID: courseID, term: term}
 		}
 	case "ctrl+r":
 		qt, params := m.queryType, m.params
@@ -659,9 +675,9 @@ func (m resultsModel) View() string {
 		case m.result.Mode == query.ModeSections:
 			help += " • enter: view section roster"
 		case m.params["combined"] == "1":
-			help += " • enter: view schedule • a: view advisor schedule • s: show selected section • c: change section"
+			help += " • enter: view schedule • a: view advisor schedule • s: show selected section • c: change section • ctrl+s: download roster"
 		default:
-			help += " • enter: view schedule • a: view advisor schedule • s: combine sections"
+			help += " • enter: view schedule • a: view advisor schedule • s: combine sections • ctrl+s: download roster"
 		}
 	case "course_search":
 		help += " • r: view roster • i: view instructor schedule"
@@ -687,6 +703,15 @@ func (m resultsModel) View() string {
 		// guaranteed visual signal.
 		prefix = "\a"
 		footer += "\n" + errorStyle.Render(m.termWarning)
+	}
+	if m.flashMsg != "" {
+		// Same bell + styled-line treatment as the term-nav warning above.
+		prefix = "\a"
+		style := subtitleStyle
+		if m.flashErr {
+			style = errorStyle
+		}
+		footer += "\n" + style.Render(m.flashMsg)
 	}
 	return prefix + header +
 		resultsBaseStyle.Render(m.table.View()) +

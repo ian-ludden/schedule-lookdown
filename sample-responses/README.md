@@ -1,4 +1,4 @@
-# Sample HTML responses from reg-sched.pl
+# Sample responses from reg-sched.pl / reg-download.pl
 
 All names, usernames, Banner IDs, and emails in these files are **fake** —
 synthetic test data, not real people. They mirror the structure of real
@@ -18,3 +18,6 @@ and times are retained for realism.
     - URL: `https://prodwebxe-hv.rose-hulman.edu/regweb-cgi/reg-sched.pl?type=Course&termcode=202630&view=tgrid&id=CSSE3`
 - [Lastname Search](./sample-lastname-search.html)
     - URL: `https://prodwebxe-hv.rose-hulman.edu/regweb-cgi/reg-sched.pl?termcode=202710&view=tgrid&lnameid=Vale&lnamebt=Lastname&id1=&id4=&id5=&deptid=`
+- [Downloaded roster (CSV)](./CSSE220-01.csv)
+    - The CSV returned by the roster page's "Download Roster" button.
+    - URL: `https://prodwebxe-hv.rose-hulman.edu/regweb-cgi/reg-download.pl` (POST, form fields `id=CSSE220-01` and `download=Download Roster`)

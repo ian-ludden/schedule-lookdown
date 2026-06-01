@@ -10,8 +10,10 @@
 package config
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/BurntSushi/toml"
 )
@@ -34,6 +36,10 @@ type Config struct {
 	// straight to a course's roster view when a course search returns exactly
 	// one result.
 	JumpToRosterOnSingleResult bool `toml:"jump_to_roster_on_single_result"`
+	// DownloadDir is where downloaded roster CSVs are saved. A leading "~" is
+	// expanded to the user's home directory. When empty, downloads go to the
+	// first usable of $XDG_DOWNLOAD_DIR, ~/Downloads, or the app's data dir.
+	DownloadDir string `toml:"download_dir"`
 }
 
 // Default returns the configuration used when no file exists or a value is
@@ -57,6 +63,11 @@ default_term = "current"
 # When a course search returns exactly one result, jump straight to that
 # course's roster instead of showing a one-row table.
 jump_to_roster_on_single_result = false
+
+# Where downloaded roster CSVs are saved. A leading "~" expands to your home
+# directory. When unset, downloads go to the first usable of $XDG_DOWNLOAD_DIR,
+# ~/Downloads, or the app's own data directory.
+# download_dir = "~/Downloads"
 `
 
 // configPath returns the path to config.toml, creating its parent directory with
@@ -113,4 +124,84 @@ func (c *Config) normalize() {
 	if c.DefaultTerm != DefaultTermCurrent && c.DefaultTerm != DefaultTermLatest {
 		c.DefaultTerm = DefaultTermCurrent
 	}
+}
+
+// ResolvedDownloadDir returns the directory where downloaded rosters should be
+// written, creating it (0700) if needed.
+//
+// An explicit DownloadDir (with a leading "~" expanded) is respected strictly:
+// if it can't be used, that's an error. When DownloadDir is unset, sensible
+// defaults are tried in order — $XDG_DOWNLOAD_DIR, ~/Downloads, then the app's
+// own data dir — and the first usable one wins. This lets a broken default
+// (e.g. a dangling or self-referential ~/Downloads symlink, as some WSL setups
+// have) degrade gracefully instead of being fatal.
+func (c Config) ResolvedDownloadDir() (string, error) {
+	if c.DownloadDir != "" {
+		dir, err := expandHome(c.DownloadDir)
+		if err != nil {
+			return "", err
+		}
+		if err := ensureDir(dir); err != nil {
+			return "", err
+		}
+		return dir, nil
+	}
+
+	var candidates []string
+	if xdg := os.Getenv("XDG_DOWNLOAD_DIR"); xdg != "" {
+		candidates = append(candidates, xdg)
+	}
+	if home, err := os.UserHomeDir(); err == nil {
+		candidates = append(candidates, filepath.Join(home, "Downloads"))
+	}
+	// Last resort: the app's own data dir, which we can reliably create.
+	candidates = append(candidates, dataDownloadDir())
+
+	var lastErr error
+	for _, dir := range candidates {
+		if err := ensureDir(dir); err != nil {
+			lastErr = err
+			continue
+		}
+		return dir, nil
+	}
+	return "", lastErr
+}
+
+// ensureDir returns nil if dir already resolves to a directory, otherwise it
+// attempts to create it (0700). Following the symlink chain with os.Stat means
+// an already-usable symlinked directory is accepted as-is rather than being
+// passed to MkdirAll (which fails with "file exists" on a looping symlink).
+func ensureDir(dir string) error {
+	if info, err := os.Stat(dir); err == nil {
+		if info.IsDir() {
+			return nil
+		}
+		return fmt.Errorf("%s exists but is not a directory", dir)
+	}
+	return os.MkdirAll(dir, 0o700)
+}
+
+// dataDownloadDir is the fallback download location under the app's XDG data
+// dir, used when no usable Downloads directory is available.
+func dataDownloadDir() string {
+	base := os.Getenv("XDG_DATA_HOME")
+	if base == "" {
+		if home, err := os.UserHomeDir(); err == nil {
+			base = filepath.Join(home, ".local", "share")
+		}
+	}
+	return filepath.Join(base, "schedule-lookdown", "downloads")
+}
+
+// expandHome replaces a leading "~" or "~/" in path with the user's home dir.
+func expandHome(path string) (string, error) {
+	if path != "~" && !strings.HasPrefix(path, "~/") {
+		return path, nil
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(home, strings.TrimPrefix(strings.TrimPrefix(path, "~"), "/")), nil
 }

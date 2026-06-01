@@ -3,6 +3,7 @@ package ui
 import (
 	"reflect"
 	"sort"
+	"strings"
 	"testing"
 
 	"github.com/charmbracelet/bubbles/table"
@@ -485,6 +486,66 @@ func TestResultsRosterEscWithoutPickerGoesBack(t *testing.T) {
 	}
 	if _, ok := cmd().(backMsg); !ok {
 		t.Errorf("expected backMsg, got %T", cmd())
+	}
+}
+
+func TestResultsDownloadKey(t *testing.T) {
+	t.Run("single-section roster emits downloadRosterMsg", func(t *testing.T) {
+		m := resultsModel{
+			queryType: "roster_view",
+			result:    query.Result{},
+			params:    map[string]string{"term": "202710", "course_id": "CSSE220-01"},
+		}
+		_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlS})
+		if cmd == nil {
+			t.Fatal("ctrl+s returned nil cmd on a roster")
+		}
+		msg, ok := cmd().(downloadRosterMsg)
+		if !ok {
+			t.Fatalf("expected downloadRosterMsg, got %T", cmd())
+		}
+		if msg.courseID != "CSSE220-01" || msg.term != "202710" {
+			t.Errorf("got %+v, want courseID=CSSE220-01 term=202710", msg)
+		}
+	})
+
+	t.Run("section picker is a no-op", func(t *testing.T) {
+		m := resultsModel{
+			queryType: "roster_view",
+			result:    query.Result{Mode: query.ModeSections},
+			params:    map[string]string{"term": "202710", "course_id": "CSSE220"},
+		}
+		if _, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlS}); cmd != nil {
+			t.Error("expected nil cmd on the section picker")
+		}
+	})
+
+	t.Run("non-roster query is a no-op", func(t *testing.T) {
+		m := resultsModel{
+			queryType: "schedule_lookup",
+			params:    map[string]string{"term": "202710", "username": "abbottm"},
+		}
+		if _, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlS}); cmd != nil {
+			t.Error("expected nil cmd for a non-roster query")
+		}
+	})
+}
+
+func TestResultsFlashRendersBell(t *testing.T) {
+	m := resultsModel{
+		queryType: "roster_view",
+		result:    query.Result{Columns: []string{"USERNAME"}, Rows: [][]string{{"abbottm"}}},
+		params:    map[string]string{"term": "202710", "course_id": "CSSE220-01"},
+		width:     80,
+		height:    24,
+		flashMsg:  "Saved roster to /tmp/CSSE220-01-202710.csv",
+	}
+	view := m.View()
+	if !strings.Contains(view, "\a") {
+		t.Error("expected View to contain the terminal bell")
+	}
+	if !strings.Contains(view, "Saved roster to /tmp/CSSE220-01-202710.csv") {
+		t.Error("expected View to contain the flash message")
 	}
 }
 
