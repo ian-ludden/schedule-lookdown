@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"log"
 	"maps"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -315,6 +317,19 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.screen = ScreenResults
 		return a, tea.Batch(a.results.Init(), advisorSearchCmd(a.session, msg.advisorName, msg.term, a.fixtures, a.logger))
 
+	case downloadRosterMsg:
+		return a, downloadRosterCmd(a.session, msg.courseID, msg.term, a.config, a.fixtures, a.logger)
+
+	case rosterDownloadedMsg:
+		if msg.err != nil {
+			a.results.flashMsg = "Download failed: " + msg.err.Error()
+			a.results.flashErr = true
+		} else {
+			a.results.flashMsg = "Saved roster to " + msg.path
+			a.results.flashErr = false
+		}
+		return a, nil
+
 	case queryResultMsg:
 		a.results = newResultsModelWithData(msg.result, msg.queryType, msg.params, a.mainWidth(), a.height, a.latestTerm)
 		a.screen = ScreenResults
@@ -586,6 +601,17 @@ type refreshCurrentQueryMsg struct {
 }
 type advisorSearchMsg struct{ advisorName, term string }
 
+// downloadRosterMsg is emitted by the results screen (ctrl+s) to request a
+// roster CSV download; App.Update has the session/config to perform it.
+type downloadRosterMsg struct{ courseID, term string }
+
+// rosterDownloadedMsg carries the outcome of a roster download back to the
+// results screen for its transient feedback line.
+type rosterDownloadedMsg struct {
+	path string
+	err  error
+}
+
 // advisorSearchCmd looks up the advisor's username via a person search by last
 // name, filters by first name, and either auto-navigates (1 match) or returns
 // a disambiguation table (2+ matches).
@@ -666,6 +692,42 @@ func advisorSearchCmd(session *auth.Session, advisorName, term string, fixtures 
 				params:    map[string]string{"term": term, "last_name": lastName},
 			}
 		}
+	}
+}
+
+// downloadRosterCmd POSTs to reg-download.pl for courseID's roster CSV and
+// writes it to the configured download directory as "<courseID>-<term>.csv",
+// reporting the outcome via rosterDownloadedMsg. Roster downloads need a live
+// POST, so it is unavailable in fixture mode.
+func downloadRosterCmd(session *auth.Session, courseID, term string, cfg config.Config, fixtures map[string]string, logger *log.Logger) tea.Cmd {
+	return func() tea.Msg {
+		if fixtures != nil {
+			return rosterDownloadedMsg{err: fmt.Errorf("roster download is unavailable in sample mode")}
+		}
+		c, err := newClient(session, fixtures, "", logger)
+		if err != nil {
+			return rosterDownloadedMsg{err: err}
+		}
+		data, err := c.DownloadRoster(context.Background(), courseID)
+		if err != nil {
+			return rosterDownloadedMsg{err: err}
+		}
+		dir, err := cfg.ResolvedDownloadDir()
+		if err != nil {
+			return rosterDownloadedMsg{err: err}
+		}
+		name := courseID
+		if term != "" {
+			name += "-" + term
+		}
+		path := filepath.Join(dir, name+".csv")
+		if err := os.WriteFile(path, data, 0o600); err != nil {
+			return rosterDownloadedMsg{err: err}
+		}
+		if logger != nil {
+			logger.Printf("downloadRoster: wrote %d bytes to %s", len(data), path)
+		}
+		return rosterDownloadedMsg{path: path}
 	}
 }
 

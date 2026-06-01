@@ -2,6 +2,8 @@ package client
 
 import (
 	"context"
+	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"net/http/cookiejar"
@@ -11,6 +13,11 @@ import (
 )
 
 const baseURL = "https://prodwebxe-hv.rose-hulman.edu/regweb-cgi/reg-sched.pl"
+
+// downloadURL is the endpoint behind the roster page's "Download Roster" button.
+// It returns the roster as a CSV body rather than HTML. It is a var (not const)
+// so tests can point it at a local server.
+var downloadURL = "https://prodwebxe-hv.rose-hulman.edu/regweb-cgi/reg-download.pl"
 
 type Client struct {
 	http        *http.Client
@@ -85,12 +92,18 @@ func (c *Client) Get(ctx context.Context, params url.Values) (*http.Response, er
 	return resp, nil
 }
 
-// Post issues a form-encoded POST request.
-func (c *Client) Post(ctx context.Context, params url.Values) (*http.Response, error) {
-	if c.logger != nil {
-		c.logger.Printf("POST %s body=%s", baseURL, params.Encode())
+// DownloadRoster POSTs the roster-download form for courseID and returns the
+// raw CSV body. courseID is e.g. "CSSE220-01" (a section) or "CSSE220"
+// (combined). It mirrors the form on the roster page: fields id and download.
+func (c *Client) DownloadRoster(ctx context.Context, courseID string) ([]byte, error) {
+	form := url.Values{
+		"id":       {courseID},
+		"download": {"Download Roster"},
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, baseURL, strings.NewReader(params.Encode()))
+	if c.logger != nil {
+		c.logger.Printf("POST %s body=%s", downloadURL, form.Encode())
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, downloadURL, strings.NewReader(form.Encode()))
 	if err != nil {
 		return nil, err
 	}
@@ -102,8 +115,16 @@ func (c *Client) Post(ctx context.Context, params url.Values) (*http.Response, e
 		}
 		return nil, err
 	}
+	defer resp.Body.Close()
 	if c.logger != nil {
 		c.logger.Printf("POST response: status=%d", resp.StatusCode)
 	}
-	return resp, nil
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("roster download failed: HTTP %d", resp.StatusCode)
+	}
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+	return body, nil
 }

@@ -72,6 +72,85 @@ func TestLoadCoercesInvalidDefaultTerm(t *testing.T) {
 	}
 }
 
+func TestResolvedDownloadDir(t *testing.T) {
+	t.Run("explicit tilde-prefixed value", func(t *testing.T) {
+		home := t.TempDir()
+		t.Setenv("HOME", home)
+		t.Setenv("XDG_DOWNLOAD_DIR", filepath.Join(t.TempDir(), "ignored"))
+
+		cfg := Config{DownloadDir: "~/rosters"}
+		got, err := cfg.ResolvedDownloadDir()
+		if err != nil {
+			t.Fatalf("ResolvedDownloadDir: %v", err)
+		}
+		want := filepath.Join(home, "rosters")
+		if got != want {
+			t.Errorf("got %q, want %q", got, want)
+		}
+		if _, err := os.Stat(got); err != nil {
+			t.Errorf("expected dir created: %v", err)
+		}
+	})
+
+	t.Run("XDG_DOWNLOAD_DIR when unset", func(t *testing.T) {
+		xdg := filepath.Join(t.TempDir(), "dl")
+		t.Setenv("XDG_DOWNLOAD_DIR", xdg)
+
+		cfg := Config{}
+		got, err := cfg.ResolvedDownloadDir()
+		if err != nil {
+			t.Fatalf("ResolvedDownloadDir: %v", err)
+		}
+		if got != xdg {
+			t.Errorf("got %q, want %q", got, xdg)
+		}
+	})
+
+	t.Run("fallback to ~/Downloads", func(t *testing.T) {
+		home := t.TempDir()
+		t.Setenv("HOME", home)
+		t.Setenv("XDG_DOWNLOAD_DIR", "")
+
+		cfg := Config{}
+		got, err := cfg.ResolvedDownloadDir()
+		if err != nil {
+			t.Fatalf("ResolvedDownloadDir: %v", err)
+		}
+		want := filepath.Join(home, "Downloads")
+		if got != want {
+			t.Errorf("got %q, want %q", got, want)
+		}
+	})
+
+	t.Run("broken ~/Downloads symlink falls back to data dir", func(t *testing.T) {
+		home := t.TempDir()
+		data := t.TempDir()
+		t.Setenv("HOME", home)
+		t.Setenv("XDG_DOWNLOAD_DIR", "")
+		t.Setenv("XDG_DATA_HOME", data)
+
+		// Self-referential symlink: Stat fails with ELOOP and MkdirAll fails with
+		// EEXIST, mirroring the broken WSL ~/Downloads in the field.
+		link := filepath.Join(home, "Downloads")
+		if err := os.Symlink(link, link); err != nil {
+			t.Fatalf("symlink: %v", err)
+		}
+
+		cfg := Config{}
+		got, err := cfg.ResolvedDownloadDir()
+		if err != nil {
+			t.Fatalf("ResolvedDownloadDir: %v", err)
+		}
+		want := filepath.Join(data, "schedule-lookdown", "downloads")
+		if got != want {
+			t.Errorf("got %q, want %q", got, want)
+		}
+		if _, err := os.Stat(got); err != nil {
+			t.Errorf("expected fallback dir created: %v", err)
+		}
+	})
+}
+
 // writeConfig writes contents to the config path under dir.
 func writeConfig(t *testing.T, dir, contents string) {
 	t.Helper()
