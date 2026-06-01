@@ -2,6 +2,7 @@ package client
 
 import (
 	"context"
+	"log"
 	"net/http"
 	"net/http/cookiejar"
 	"net/url"
@@ -15,9 +16,10 @@ type Client struct {
 	http        *http.Client
 	base        *url.URL
 	fixturePath string
+	logger      *log.Logger
 }
 
-func New(cookies []*http.Cookie) (*Client, error) {
+func New(cookies []*http.Cookie, logger *log.Logger) (*Client, error) {
 	jar, err := cookiejar.New(nil)
 	if err != nil {
 		return nil, err
@@ -31,8 +33,9 @@ func New(cookies []*http.Cookie) (*Client, error) {
 	jar.SetCookies(base, cookies)
 
 	return &Client{
-		http: &http.Client{Jar: jar},
-		base: base,
+		http:   &http.Client{Jar: jar},
+		base:   base,
+		logger: logger,
 	}, nil
 }
 
@@ -50,6 +53,9 @@ func NewFixture(path string) (*Client, error) {
 // If a fixture path is set, the file is returned instead of hitting the network.
 func (c *Client) Get(ctx context.Context, params url.Values) (*http.Response, error) {
 	if c.fixturePath != "" {
+		if c.logger != nil {
+			c.logger.Printf("GET (fixture) params=%s", params.Encode())
+		}
 		f, err := os.Open(c.fixturePath)
 		if err != nil {
 			return nil, err
@@ -59,19 +65,45 @@ func (c *Client) Get(ctx context.Context, params url.Values) (*http.Response, er
 
 	u := *c.base
 	u.RawQuery = params.Encode()
+	if c.logger != nil {
+		c.logger.Printf("GET %s", u.String())
+	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
 	if err != nil {
 		return nil, err
 	}
-	return c.http.Do(req)
+	resp, err := c.http.Do(req)
+	if err != nil {
+		if c.logger != nil {
+			c.logger.Printf("GET error: %v", err)
+		}
+		return nil, err
+	}
+	if c.logger != nil {
+		c.logger.Printf("GET response: status=%d", resp.StatusCode)
+	}
+	return resp, nil
 }
 
 // Post issues a form-encoded POST request.
 func (c *Client) Post(ctx context.Context, params url.Values) (*http.Response, error) {
+	if c.logger != nil {
+		c.logger.Printf("POST %s body=%s", baseURL, params.Encode())
+	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, baseURL, strings.NewReader(params.Encode()))
 	if err != nil {
 		return nil, err
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	return c.http.Do(req)
+	resp, err := c.http.Do(req)
+	if err != nil {
+		if c.logger != nil {
+			c.logger.Printf("POST error: %v", err)
+		}
+		return nil, err
+	}
+	if c.logger != nil {
+		c.logger.Printf("POST response: status=%d", resp.StatusCode)
+	}
+	return resp, nil
 }

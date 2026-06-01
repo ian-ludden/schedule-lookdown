@@ -29,7 +29,7 @@ func writeCourseFixture(t *testing.T, courseID string) string {
 func TestExecuteQueryCmdSingleCourseJumpsToRoster(t *testing.T) {
 	fixtures := map[string]string{"course_search": writeCourseFixture(t, "CSSE132-01")}
 	cmd := executeQueryCmd(nil, "course_search",
-		map[string]string{"term": "202630", "course_code": "CSSE 132"}, fixtures, true)
+		map[string]string{"term": "202630", "course_code": "CSSE 132"}, fixtures, true, nil)
 
 	msg := cmd()
 	ss, ok := msg.(searchSubmittedMsg)
@@ -50,7 +50,7 @@ func TestExecuteQueryCmdSingleCourseJumpsToRoster(t *testing.T) {
 func TestExecuteQueryCmdSingleCourseNoJumpWhenDisabled(t *testing.T) {
 	fixtures := map[string]string{"course_search": writeCourseFixture(t, "CSSE132-01")}
 	cmd := executeQueryCmd(nil, "course_search",
-		map[string]string{"term": "202630", "course_code": "CSSE 132"}, fixtures, false)
+		map[string]string{"term": "202630", "course_code": "CSSE 132"}, fixtures, false, nil)
 
 	if _, ok := cmd().(queryResultMsg); !ok {
 		t.Errorf("with jump disabled, expected queryResultMsg, got %T", cmd())

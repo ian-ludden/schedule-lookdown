@@ -3,6 +3,7 @@ package main
 import (
 	"flag"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -16,6 +17,7 @@ import (
 
 func main() {
 	loadSamples := flag.Bool("load-samples", false, "load all sample response files from ./sample-responses/ instead of authenticating")
+	debugLogArg := flag.String("debug", "", "write query debug info to this log file (e.g. debug.log)")
 	flag.Parse()
 
 	// Load user config; defaults are used (and a default file written) on first run.
@@ -35,14 +37,36 @@ func main() {
 		}
 	}
 
+	var logger = createLogger(debugLogArg)
+
 	p := tea.NewProgram(
-		ui.NewApp(session, cfg, initial, fixtures),
+		ui.NewApp(session, cfg, initial, fixtures, logger),
 		tea.WithAltScreen(),
 	)
 	if _, err := p.Run(); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
+}
+
+// createLogger constructs a debugging log file and
+// defers closing it to avoid resource leaks.
+func createLogger(logFilename *string) *log.Logger {
+	if *logFilename == "" {
+		return nil
+	}
+	var logger *log.Logger
+
+	f, err := os.OpenFile(*logFilename, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "cannot open debug log: %v\n", err)
+		os.Exit(1)
+	}
+	defer f.Close()
+	logger = log.New(f, "", log.Ldate|log.Ltime|log.Lmicroseconds)
+	logger.Println("=== schedule-lookdown debug log started ===")
+
+	return logger
 }
 
 // discoverSamples scans dir for .html files and maps each to a query type

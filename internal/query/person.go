@@ -30,7 +30,7 @@ func (q *PersonSearch) Execute(ctx context.Context, c *client.Client) (Result, e
 	}
 
 	params := url.Values{
-		"type":     {"Person"},
+		"type":     {"Instructor"},
 		"termcode": {q.Term},
 		"view":     {"tgrid"},
 		"id":       {q.LastName + "*"},
