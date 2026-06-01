@@ -362,3 +362,142 @@ func TestResultsPersonSearchEnter(t *testing.T) {
 		t.Errorf("got username %q, want smithj", ss.params["username"])
 	}
 }
+
+// enter on the section picker drills into the highlighted section's roster,
+// tagged with from_sections so esc can return.
+func TestResultsSectionPickerEnter(t *testing.T) {
+	tbl := table.New(
+		table.WithColumns([]table.Column{{Title: "Course", Width: 12}}),
+		table.WithRows([]table.Row{{"CSSE474-02"}}),
+		table.WithFocused(true),
+	)
+	m := resultsModel{
+		queryType: "roster_view",
+		params:    map[string]string{"term": "202630", "course_id": "CSSE474"},
+		result:    query.Result{Mode: query.ModeSections},
+		table:     tbl,
+	}
+	ss := expectSearchSubmitted(t, m, tea.KeyMsg{Type: tea.KeyEnter})
+	if ss.queryType != "roster_view" {
+		t.Errorf("queryType = %q, want roster_view", ss.queryType)
+	}
+	if ss.params["course_id"] != "CSSE474-02" {
+		t.Errorf("course_id = %q, want CSSE474-02", ss.params["course_id"])
+	}
+	if ss.params["from_sections"] != "1" {
+		t.Errorf("from_sections = %q, want 1", ss.params["from_sections"])
+	}
+}
+
+// 's' on a single-section roster toggles to the combined roster, remembering
+// which section to return to.
+func TestResultsRosterToggleToCombined(t *testing.T) {
+	m := resultsModel{
+		queryType: "roster_view",
+		params:    map[string]string{"term": "202630", "course_id": "CSSE474-02", "from_sections": "1"},
+		result:    query.Result{},
+	}
+	ss := expectSearchSubmitted(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("s")})
+	if ss.params["course_id"] != "CSSE474" {
+		t.Errorf("course_id = %q, want CSSE474 (base)", ss.params["course_id"])
+	}
+	if ss.params["combined"] != "1" {
+		t.Errorf("combined = %q, want 1", ss.params["combined"])
+	}
+	if ss.params["selected_section"] != "CSSE474-02" {
+		t.Errorf("selected_section = %q, want CSSE474-02", ss.params["selected_section"])
+	}
+	if ss.params["from_sections"] != "1" {
+		t.Errorf("from_sections = %q, want 1", ss.params["from_sections"])
+	}
+}
+
+// 's' on the combined roster toggles back to the previously selected section.
+func TestResultsRosterToggleToSection(t *testing.T) {
+	m := resultsModel{
+		queryType: "roster_view",
+		params: map[string]string{
+			"term": "202630", "course_id": "CSSE474", "combined": "1",
+			"selected_section": "CSSE474-02", "from_sections": "1",
+		},
+		result: query.Result{},
+	}
+	ss := expectSearchSubmitted(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("s")})
+	if ss.params["course_id"] != "CSSE474-02" {
+		t.Errorf("course_id = %q, want CSSE474-02", ss.params["course_id"])
+	}
+	if ss.params["combined"] != "" {
+		t.Errorf("combined = %q, want empty", ss.params["combined"])
+	}
+}
+
+// 'c' (change section) jumps from the combined roster back to the section picker.
+func TestResultsRosterChangeSection(t *testing.T) {
+	m := resultsModel{
+		queryType: "roster_view",
+		params: map[string]string{
+			"term": "202630", "course_id": "CSSE474", "combined": "1",
+			"selected_section": "CSSE474-02", "from_sections": "1",
+		},
+		result: query.Result{},
+	}
+	ss := expectSearchSubmitted(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("c")})
+	if ss.queryType != "roster_view" {
+		t.Errorf("queryType = %q, want roster_view", ss.queryType)
+	}
+	if ss.params["course_id"] != "CSSE474" {
+		t.Errorf("course_id = %q, want CSSE474 (picker)", ss.params["course_id"])
+	}
+	if ss.params["combined"] != "" {
+		t.Errorf("picker should not carry combined, got %q", ss.params["combined"])
+	}
+}
+
+// esc on a roster reached via the picker returns to the picker, not the menu.
+func TestResultsRosterEscReturnsToPicker(t *testing.T) {
+	m := resultsModel{
+		queryType: "roster_view",
+		params:    map[string]string{"term": "202630", "course_id": "CSSE474-02", "from_sections": "1"},
+		result:    query.Result{},
+	}
+	ss := expectSearchSubmitted(t, m, tea.KeyMsg{Type: tea.KeyEsc})
+	if ss.queryType != "roster_view" {
+		t.Errorf("queryType = %q, want roster_view", ss.queryType)
+	}
+	if ss.params["course_id"] != "CSSE474" {
+		t.Errorf("course_id = %q, want CSSE474 (picker)", ss.params["course_id"])
+	}
+	if ss.params["from_sections"] != "" {
+		t.Errorf("picker should not carry from_sections, got %q", ss.params["from_sections"])
+	}
+}
+
+// esc on a directly-opened roster (no picker origin) goes back to the menu.
+func TestResultsRosterEscWithoutPickerGoesBack(t *testing.T) {
+	m := resultsModel{
+		queryType: "roster_view",
+		params:    map[string]string{"term": "202630", "course_id": "CSSE474-02"},
+		result:    query.Result{},
+	}
+	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	if cmd == nil {
+		t.Fatal("esc returned nil cmd")
+	}
+	if _, ok := cmd().(backMsg); !ok {
+		t.Errorf("expected backMsg, got %T", cmd())
+	}
+}
+
+func expectSearchSubmitted(t *testing.T, m resultsModel, key tea.KeyMsg) searchSubmittedMsg {
+	t.Helper()
+	_, cmd := m.Update(key)
+	if cmd == nil {
+		t.Fatal("key returned nil cmd")
+	}
+	msg := cmd()
+	ss, ok := msg.(searchSubmittedMsg)
+	if !ok {
+		t.Fatalf("expected searchSubmittedMsg, got %T", msg)
+	}
+	return ss
+}

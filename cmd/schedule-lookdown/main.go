@@ -91,7 +91,14 @@ func discoverSamples(dir string) map[string]string {
 			queryType = "course_search"
 		case strings.Contains(name, "student") || strings.Contains(name, "username"):
 			queryType = "schedule_lookup"
-		case strings.Contains(name, "roster") && !strings.Contains(name, "combined"):
+		case strings.Contains(name, "roster"):
+			// Prefer the multi-section "combined" sample so --load-samples can
+			// demo the section picker (its first table lists every section). A
+			// bare course id yields the picker; an explicit "-NN" id yields a
+			// roster. Skip the single-section sample so it doesn't shadow this.
+			if !strings.Contains(name, "combined") {
+				continue
+			}
 			queryType = "roster_view"
 		case strings.Contains(name, "instructor"):
 			queryType = "instructor_lookup"
