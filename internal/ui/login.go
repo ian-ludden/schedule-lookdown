@@ -64,7 +64,7 @@ type authStatusMsg struct {
 
 // passwordNeededMsg is sent when headless auth needs a password that isn't
 // stored yet. App.Update handles it by switching to ScreenPassword.
-type passwordNeededMsg struct{}
+type passwordNeededMsg struct{ username string }
 
 // usernameNeededMsg is sent when headless auth needs a username that isn't
 // stored yet. App.Update handles it by switching to ScreenUsername.
@@ -79,7 +79,7 @@ func doAuthCmd() tea.Cmd {
 		password, err := auth.RetrievePassword()
 		if err != nil {
 			// Password not stored (or keyring unavailable) — ask for it.
-			return func() tea.Msg { return passwordNeededMsg{} }
+			return func() tea.Msg { return passwordNeededMsg{username: username} }
 		}
 		return doHeadlessAuthCmd(username, password)
 	}
@@ -113,7 +113,7 @@ func doAuthCmdForUsername(username string) tea.Cmd {
 	}
 	password, err := auth.RetrievePassword()
 	if err != nil {
-		return func() tea.Msg { return passwordNeededMsg{} }
+		return func() tea.Msg { return passwordNeededMsg{username: username} }
 	}
 	return doHeadlessAuthCmd(username, password)
 }
