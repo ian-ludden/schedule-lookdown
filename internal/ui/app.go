@@ -85,7 +85,7 @@ func NewApp(session *auth.Session, cfg config.Config, initial Screen, fixtures m
 		fixtures:       fixtures,
 		logger:         logger,
 		login:          newLoginModel(),
-		passwordPrompt: newPasswordModel(),
+		passwordPrompt: newPasswordModel(""),
 		menu:           newMenuModel(),
 		search:         newSearchModel(),
 		results:        newResultsModel(),
@@ -227,7 +227,7 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// clear the stored password and re-prompt so the user can recover.
 		if auth.IsWSL2() && isCredentialError(msg.err) {
 			_ = auth.DeletePassword()
-			a.passwordPrompt = newPasswordModel()
+			a.passwordPrompt = newPasswordModel(a.storedUsername)
 			a.passwordPrompt.err = msg.err
 			a.screen = ScreenPassword
 			return a, a.passwordPrompt.Init()
@@ -243,7 +243,10 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return a, a.usernamePrompt.Init()
 
 	case passwordNeededMsg:
-		a.passwordPrompt = newPasswordModel()
+		if msg.username != "" {
+			a.storedUsername = msg.username
+		}
+		a.passwordPrompt = newPasswordModel(a.storedUsername)
 		a.screen = ScreenPassword
 		return a, a.passwordPrompt.Init()
 

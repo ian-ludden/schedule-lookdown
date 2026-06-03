@@ -6,18 +6,19 @@ import (
 )
 
 type passwordModel struct {
-	input textinput.Model
-	err   error // set when re-prompting after a rejected password
+	input    textinput.Model
+	username string
+	err      error // set when re-prompting after a rejected password
 }
 
-func newPasswordModel() passwordModel {
+func newPasswordModel(username string) passwordModel {
 	t := textinput.New()
 	t.Placeholder = "Microsoft password"
 	t.EchoMode = textinput.EchoPassword
 	t.Width = 40
 	t.CharLimit = 128
 	t.Focus()
-	return passwordModel{input: t}
+	return passwordModel{input: t, username: username}
 }
 
 func (m passwordModel) Init() tea.Cmd { return m.input.Focus() }
@@ -40,8 +41,12 @@ func (m passwordModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m passwordModel) View() string {
+	subtitle := "Microsoft authentication"
+	if m.username != "" {
+		subtitle += " · " + m.username
+	}
 	s := titleStyle.Render("Schedule Lookdown") + "\n"
-	s += subtitleStyle.Render("Microsoft authentication") + "\n\n"
+	s += subtitleStyle.Render(subtitle) + "\n\n"
 	if m.err != nil {
 		s += errorStyle.Render("Previous sign-in failed: "+m.err.Error()) + "\n\n"
 	}
