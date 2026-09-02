@@ -175,9 +175,34 @@ func computeColWidths(cols []string, termWidth int) map[string]int {
 		// Even HIGH doesn't fit; scale HIGH proportionally; LOW and MEDIUM get minimum.
 		setToMin(low, widths)
 		setToMin(med, widths)
-		scaleProportionally(high, widths, remainAfterLow, sumHigh)
+		scaleProportionally(high, widths, remainAfterLow-len(med)*minColWidth, sumHigh)
 	}
+	clampTotal(cols, widths, available)
 	return widths
+}
+
+// clampTotal reduces widths (never below 1) so their sum does not exceed
+// budget, trimming the currently-widest column first. This is the final
+// backstop against per-branch proportional math flooring a column up to
+// minColWidth without reclaiming that width from elsewhere, which can leave
+// the total over budget even when each branch's own arithmetic looks sound.
+func clampTotal(cols []string, widths map[string]int, budget int) {
+	total := 0
+	for _, c := range cols {
+		total += widths[c]
+	}
+	for over := total - budget; over > 0; over-- {
+		widest := cols[0]
+		for _, c := range cols {
+			if widths[c] > widths[widest] {
+				widest = c
+			}
+		}
+		if widths[widest] <= 1 {
+			break
+		}
+		widths[widest]--
+	}
 }
 
 // buildPreferredWidths returns a widths map initialised from preferredWidths (or
@@ -696,7 +721,15 @@ func (m resultsModel) View() string {
 	if m.meta != "" {
 		header += m.meta + "\n"
 	}
-	footer := helpStyle.Render(help)
+	// Some query types (notably roster_view) have help text longer than
+	// narrower terminals can fit; without a width cap the unwrapped line
+	// widens the whole view beyond mainWidth and shoves the history panel
+	// off-screen (issue #53).
+	footerStyle := helpStyle
+	if m.width > 0 {
+		footerStyle = footerStyle.Width(m.width)
+	}
+	footer := footerStyle.Render(help)
 	prefix := ""
 	if m.termWarning != "" {
 		// BEL rings the terminal bell once on this render; the styled line is the
