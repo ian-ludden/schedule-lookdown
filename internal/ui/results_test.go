@@ -198,6 +198,35 @@ func TestComputeColWidths(t *testing.T) {
 	})
 }
 
+// TestComputeColWidthsNeverExceedsBudget guards against the class of bug
+// behind issue #53 (the history panel disappearing on the roster view): if
+// computeColWidths ever returns column widths that sum above what
+// calcAvailable budgeted, the results table renders wider than mainWidth and
+// bleeds into (or past) the history panel.
+func TestComputeColWidthsNeverExceedsBudget(t *testing.T) {
+	columnSets := map[string][]string{
+		"course_search":   {"Course", "CRN", "Course Title", "Instructor", "CrHrs", "Enrl", "Cap", "Term Schedule", "Comments", "Final Exam Schedule", "Term Dates"},
+		"roster_view":     {"USERNAME", "NAME", "BANNER ID", "MAJOR", "CLASS", "YEAR", "EMAIL"},
+		"roster_view_adv": {"USERNAME", "NAME", "BANNER ID", "MAJOR", "CLASS", "YEAR", "ADVISOR", "EMAIL"},
+		"schedule_lookup": {"Course", "CRN", "Course Title", "Instructor", "CrHrs", "Term Schedule", "Comments", "Final Exam Schedule", "Term Dates"},
+		"person_search":   {"USERNAME", "NAME", "BANNER ID", "CAMPUS MAIL"},
+	}
+
+	for name, cols := range columnSets {
+		for tw := 10; tw <= 150; tw++ {
+			widths := computeColWidths(cols, tw)
+			total := 0
+			for _, c := range cols {
+				total += widths[c]
+			}
+			available := calcAvailable(tw, len(cols))
+			if total > available {
+				t.Fatalf("%s at termWidth=%d: total width %d exceeds available %d (widths=%v)", name, tw, total, available, widths)
+			}
+		}
+	}
+}
+
 // ---- key-handler tests ----
 
 func TestResultsTermNavKeys(t *testing.T) {

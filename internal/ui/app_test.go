@@ -1,9 +1,13 @@
 package ui
 
 import (
+	"os"
+	"strings"
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
+	"github.com/luddenig/schedule-lookdown/internal/client"
 	"github.com/luddenig/schedule-lookdown/internal/config"
 	"github.com/luddenig/schedule-lookdown/internal/query"
 )
@@ -190,5 +194,55 @@ func TestAppTermNavIntegration(t *testing.T) {
 	app4, _ := driveUpdate(app3, qr)
 	if got := app4.results.params["term"]; got != "202620" {
 		t.Errorf("after queryResultMsg, results.params[term] = %q, want 202620", got)
+	}
+}
+
+// TestRosterViewKeepsHistoryPanelOnScreen is a regression test for issue #53:
+// the roster view's help line ("↑/↓ navigate • ... • ctrl+s: download roster")
+// is the longest of any query type, and rendering it without a width cap made
+// the whole main-content block wider than mainWidth. lipgloss.JoinHorizontal
+// pads every line in a block to that block's own widest line, so the
+// oversized help line pushed the history panel off the right edge of the
+// terminal even though the panel itself renders fine. Assert that no
+// rendered line of the full app view exceeds the terminal width, and that
+// the history panel border is actually present in the output, across a
+// range of terminal widths (including ones narrow enough to force the
+// results table to compress its columns).
+func TestRosterViewKeepsHistoryPanelOnScreen(t *testing.T) {
+	f, err := os.Open("../../sample-responses/sample-roster.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	cols, rows, err := client.ParseRoster(f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result := query.Result{Columns: cols, Rows: rows, Metadata: map[string]string{"title": "Object-Oriented Software Development"}}
+
+	// Widths below ~80 force the roster table's 8 columns below minColWidth,
+	// which calcAvailable deliberately refuses to do (a pre-existing, separate
+	// tradeoff unrelated to issue #53) — so this sweep starts at a terminal
+	// width the table can actually honor.
+	for _, width := range []int{80, 90, 120, 160, 220} {
+		app := App{screen: ScreenResults, width: width, height: 40}
+		app.historyPanel = newHistoryPanelModel()
+		app.historyPanel.height = app.height
+		app.historyPanel.entries = []HistoryEntry{
+			{QueryType: "roster_view", Params: map[string]string{"course_id": "CSSE230-02"}},
+		}
+		app.results = newResultsModelWithData(result, "roster_view",
+			map[string]string{"term": "202710", "course_id": "CSSE230-02"},
+			app.mainWidth(), app.height, "")
+
+		out := app.View()
+		for i, line := range strings.Split(out, "\n") {
+			if w := lipgloss.Width(line); w > width {
+				t.Errorf("width=%d: line %d is %d wide (%q)", width, i, w, line)
+			}
+		}
+		if !strings.Contains(out, "Recent Queries") {
+			t.Errorf("width=%d: history panel title not found in output", width)
+		}
 	}
 }
