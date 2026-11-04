@@ -68,6 +68,11 @@ func fieldsForQuery(queryType string, defaultTerm string) []field {
 			termField,
 			{label: "Course ID", key: "course_id", input: newInput("CSSE474-02")},
 		}
+	case "adhoc_group":
+		return []field{
+			termField,
+			{label: "Usernames", key: "usernames", input: newInput("RHIT usernames")},
+		}
 	}
 	return nil
 }
