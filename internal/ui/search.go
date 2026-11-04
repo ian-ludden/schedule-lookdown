@@ -216,6 +216,8 @@ func queryDisplayName(key string) string {
 		return "Schedule Lookup"
 	case "roster_view":
 		return "Roster View"
+	case "adhoc_group":
+		return "Ad-Hoc Group Schedule"
 	}
 	return key
 }
