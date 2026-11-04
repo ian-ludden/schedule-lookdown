@@ -4,6 +4,7 @@
 
 ## Add multiple username inputs
 - See if Bubble Tea already has built-in support for this type of input field. 
+  - Look in [their Bubbles repo](https://github.com/charmbracelet/bubbles). 
 - If not, then decide between comma-separated usernames or a fixed number of username fields (with the option of leaving some blank). 
 
 ## Retrieve the schedules for all selected usernames
