@@ -109,6 +109,48 @@ func ParseTermOptions(r io.Reader) ([]string, error) {
 	return codes, nil
 }
 
+// ParseUserOptions extracts the people listed in the ad-hoc group page's
+// <select name="id6"> multi-select. Option text is "Last, First" optionally
+// followed by a "(YR-MAJOR)" parenthetical for students, padded with spaces; the
+// server truncates long names at a fixed width, which can cut the parenthetical
+// mid-way (handled by dropping an unterminated "(..."). Options with an empty
+// value are skipped.
+func ParseUserOptions(r io.Reader) ([]models.Person, error) {
+	doc, err := goquery.NewDocumentFromReader(r)
+	if err != nil {
+		return nil, err
+	}
+
+	var people []models.Person
+	doc.Find("select[name='id6'] option").Each(func(_ int, opt *goquery.Selection) {
+		id, ok := opt.Attr("value")
+		id = strings.TrimSpace(id)
+		if !ok || id == "" {
+			return
+		}
+		text := strings.Join(strings.Fields(opt.Text()), " ")
+		if text == "" {
+			return
+		}
+
+		p := models.Person{ID: id}
+		if i := strings.LastIndex(text, " ("); i >= 0 {
+			detail := text[i+2:]
+			if strings.HasSuffix(detail, ")") {
+				p.Detail = strings.TrimSuffix(detail, ")")
+			}
+			text = text[:i]
+		}
+		if last, first, found := strings.Cut(text, ", "); found {
+			p.Last, p.First = last, first
+		} else {
+			p.Last = text
+		}
+		people = append(people, p)
+	})
+	return people, nil
+}
+
 // ParseSections parses the schedule table from a reg-sched.pl response into
 // typed Section values. Column order matches the HTML:
 // Course, CRN, Course Title, Instructor, CrHrs, Enrl, Cap, Term Schedule,

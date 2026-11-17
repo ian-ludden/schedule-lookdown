@@ -43,3 +43,6 @@ example-response.html
 
 # Debugging logs
 *.log
+
+# Saved live-site pages (personal data)
+*.htm
