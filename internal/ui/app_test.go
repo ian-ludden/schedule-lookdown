@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"strings"
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -190,5 +191,16 @@ func TestAppTermNavIntegration(t *testing.T) {
 	app4, _ := driveUpdate(app3, qr)
 	if got := app4.results.params["term"]; got != "202620" {
 		t.Errorf("after queryResultMsg, results.params[term] = %q, want 202620", got)
+	}
+}
+
+func TestBuildQueryAdHocGroup(t *testing.T) {
+	q, err := buildQuery("adhoc_group", map[string]string{"term": "202710", "ids": "11 22 33"})
+	if err != nil {
+		t.Fatalf("buildQuery: %v", err)
+	}
+	g, ok := q.(*query.GroupGrid)
+	if !ok || g.Term != "202710" || strings.Join(g.IDs, ",") != "11,22,33" {
+		t.Errorf("got %#v", q)
 	}
 }

@@ -27,12 +27,18 @@ type Client struct {
 }
 
 func New(cookies []*http.Cookie, logger *log.Logger) (*Client, error) {
+	return NewWithBaseURL(baseURL, cookies, logger)
+}
+
+// NewWithBaseURL is New with an explicit endpoint, so tests in other packages
+// can point a client at a local httptest server.
+func NewWithBaseURL(rawBase string, cookies []*http.Cookie, logger *log.Logger) (*Client, error) {
 	jar, err := cookiejar.New(nil)
 	if err != nil {
 		return nil, err
 	}
 
-	base, err := url.Parse(baseURL)
+	base, err := url.Parse(rawBase)
 	if err != nil {
 		return nil, err
 	}

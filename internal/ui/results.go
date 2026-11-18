@@ -51,6 +51,7 @@ var preferredWidths = map[string]int{
 	"YEAR":                6,
 	"ADVISOR":             10,
 	"EMAIL":               30,
+	"DAY":                 7,
 }
 
 // columnPriority controls which columns absorb width compression first.
@@ -119,6 +120,15 @@ func buildResultsTable(result query.Result, width, height, reserved int) table.M
 	rows := make([]table.Row, len(result.Rows))
 	for i, r := range result.Rows {
 		rows[i] = table.Row(r)
+		// Size each rule row to its columns exactly; an over-long string would
+		// be truncated with a trailing ellipsis.
+		if result.Mode == query.ModeGroup && query.IsGroupSeparator(r) {
+			rule := make(table.Row, len(cols))
+			for j, c := range cols {
+				rule[j] = strings.Repeat("─", max(c.Width, 0))
+			}
+			rows[i] = rule
+		}
 	}
 
 	tableHeight := max(1, height-resultsOverheadLines-reserved)
@@ -477,9 +487,29 @@ func (m resultsModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 
 	// Forward any other keys to the table
+	prev := m.table.Cursor()
 	var cmd tea.Cmd
 	m.table, cmd = m.table.Update(msg)
+	m.skipGroupSeparator(prev)
 	return m, cmd
+}
+
+// skipGroupSeparator steps the cursor past a group grid's rule row, continuing
+// in the direction it was moving (prev is the cursor before the key press).
+func (m *resultsModel) skipGroupSeparator(prev int) {
+	if m.result.Mode != query.ModeGroup {
+		return
+	}
+	rows := m.table.Rows()
+	c := m.table.Cursor()
+	if c < 0 || c >= len(rows) || !query.IsGroupSeparator(rows[c]) {
+		return
+	}
+	if c >= prev {
+		m.table.MoveDown(1)
+	} else {
+		m.table.MoveUp(1)
+	}
 }
 
 func (m resultsModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -559,6 +589,8 @@ func metadataContent(queryType string, result query.Result, params map[string]st
 		// "Sections" appears only on the combined roster, where the metadata layer
 		// populates it; single-section rosters omit it.
 		add("Sections", meta["sections"])
+	case "adhoc_group":
+		add("Members", meta["members"])
 	case "course_search":
 		term := params["course_code"]
 		if term == "" {
@@ -628,6 +660,8 @@ func queryResultTitle(queryType string, params map[string]string) string {
 			return "Person Search — " + ln + "*"
 		}
 		return "Person Search"
+	case "adhoc_group":
+		return "Ad-Hoc Group Schedule"
 	}
 	return "Results"
 }

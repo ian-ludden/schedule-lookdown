@@ -4,6 +4,7 @@ import (
 	"context"
 
 	"github.com/luddenig/schedule-lookdown/internal/client"
+	"github.com/luddenig/schedule-lookdown/internal/models"
 )
 
 // Query represents a parameterized request to the registration system.
@@ -22,9 +23,15 @@ type Result struct {
 	// table/roster; "sections" marks a Roster View section picker (a course-list
 	// table whose rows are sections to drill into).
 	Mode string
+	// Group carries the structured merged grid for ad-hoc group queries (nil
+	// otherwise). Columns/Rows hold a flattened rendering of the same data.
+	Group *models.GroupSchedule
 }
 
 // Result modes.
 const (
 	ModeSections = "sections"
+	// ModeGroup marks an ad-hoc group grid: per-person lane rows with rule rows
+	// (see IsGroupSeparator) between days that the UI skips when navigating.
+	ModeGroup = "group"
 )

@@ -592,6 +592,11 @@ func buildQuery(queryType string, params map[string]string) (query.Query, error)
 			Term:     params["term"],
 			LastName: params["last_name"],
 		}
+	case "adhoc_group":
+		q = &query.GroupGrid{
+			Term: params["term"],
+			IDs:  strings.Fields(params["ids"]),
+		}
 	default:
 		return nil, fmt.Errorf("unknown query type: %s", queryType)
 	}
