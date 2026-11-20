@@ -33,10 +33,8 @@ var (
 			Foreground(lipgloss.Color(ROSE_RED))
 
 	panelNormalItemStyle = normalStyle
-	// lipgloss.NewStyle().Foreground(lipgloss.Color("#A9B1D6"))
 
 	panelSelectedItemStyle = selectedStyle
-	// lipgloss.NewStyle().Foreground(lipgloss.Color("#7AA2F7")).Bold(true)
 )
 
 type historyPanelModel struct {

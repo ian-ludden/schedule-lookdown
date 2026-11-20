@@ -154,7 +154,7 @@ func buildResultsTable(result query.Result, width, height, reserved int) table.M
 		BorderBottom(true).
 		Bold(false)
 	s.Selected = s.Selected.
-		Foreground(lipgloss.Color(ROSE_SILVER)).
+		Foreground(lipgloss.Color(CREAM)).
 		Background(lipgloss.Color(ROSE_RED)).
 		Bold(false)
 	t.SetStyles(s)
