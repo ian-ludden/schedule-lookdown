@@ -2,6 +2,8 @@ package ui
 
 import (
 	"context"
+	"fmt"
+	"time"
 
 	"github.com/charmbracelet/bubbles/spinner"
 	tea "github.com/charmbracelet/bubbletea"
@@ -15,13 +17,14 @@ type loginModel struct {
 	// persist mirrors config.PersistChromeProfile: reuse the saved Chrome
 	// profile and try a silent restore before prompting for credentials.
 	persist bool
+	started time.Time // when the current wait began; drives the elapsed counter
 }
 
 func newLoginModel(persist bool) loginModel {
 	s := spinner.New()
 	s.Spinner = spinner.Dot
 	s.Style = selectedStyle
-	return loginModel{spinner: s, persist: persist}
+	return loginModel{spinner: s, persist: persist, started: time.Now()}
 }
 
 func (m loginModel) Init() tea.Cmd {
@@ -52,6 +55,10 @@ func (m loginModel) View() string {
 	body := m.status
 	if body == "" {
 		body = "Starting authentication..."
+	}
+	// After a few seconds show elapsed time so a long wait reads as progress.
+	if secs := int(time.Since(m.started).Seconds()); secs >= 3 {
+		body += fmt.Sprintf(" (%ds)", secs)
 	}
 	return titleStyle.Render("Schedule Lookdown") + "\n\n" +
 		m.spinner.View() + " " + body + "\n" +
@@ -145,7 +152,12 @@ func doSilentAuthCmd() tea.Cmd {
 		defer close(statusCh)
 		cookies, err := auth.AuthenticateSilent(
 			context.Background(),
-			func(s string) { select { case statusCh <- s: default: } },
+			func(s string) {
+				select {
+				case statusCh <- s:
+				default:
+				}
+			},
 		)
 		if err != nil {
 			resultCh <- silentAuthFailedMsg{}
@@ -185,7 +197,12 @@ func doHeadlessAuthCmd(username, password string, persist bool) tea.Cmd {
 		defer close(codeNeededCh)
 		cookies, err := auth.AuthenticateHeadless(
 			context.Background(), username, password, persist,
-			func(s string) { select { case statusCh <- s: default: } },
+			func(s string) {
+				select {
+				case statusCh <- s:
+				default:
+				}
+			},
 			func() string {
 				codeNeededCh <- struct{}{}
 				return <-codeInputCh

@@ -1,12 +1,15 @@
 package ui
 
 import (
+	"errors"
+	"net/http"
 	"os"
 	"strings"
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/luddenig/schedule-lookdown/internal/auth"
 	"github.com/luddenig/schedule-lookdown/internal/client"
 	"github.com/luddenig/schedule-lookdown/internal/config"
 	"github.com/luddenig/schedule-lookdown/internal/query"
@@ -256,4 +259,34 @@ func TestRosterViewKeepsHistoryPanelOnScreen(t *testing.T) {
 			t.Errorf("width=%d: history panel title not found in output", width)
 		}
 	}
+}
+
+func TestStartupLoadedRouting(t *testing.T) {
+	valid := auth.NewSession([]*http.Cookie{{Name: "c", Value: "v"}})
+
+	t.Run("valid session goes to menu", func(t *testing.T) {
+		app := NewApp(nil, config.Default(), ScreenStartup, nil, nil)
+		if app.screen != ScreenStartup {
+			t.Fatalf("initial screen = %v, want startup", app.screen)
+		}
+		m, _ := app.Update(startupLoadedMsg{session: valid, username: "quinna"})
+		got := m.(App)
+		if got.screen != ScreenMenu || got.storedUsername != "quinna" {
+			t.Errorf("screen=%v username=%q, want menu/quinna", got.screen, got.storedUsername)
+		}
+	})
+	t.Run("valid session without username prompts", func(t *testing.T) {
+		app := NewApp(nil, config.Default(), ScreenStartup, nil, nil)
+		m, _ := app.Update(startupLoadedMsg{session: valid, usernameErr: errors.New("none")})
+		if got := m.(App); got.screen != ScreenUsername {
+			t.Errorf("screen=%v, want username", got.screen)
+		}
+	})
+	t.Run("no session starts auth", func(t *testing.T) {
+		app := NewApp(nil, config.Default(), ScreenStartup, nil, nil)
+		m, cmd := app.Update(startupLoadedMsg{usernameErr: errors.New("none")})
+		if got := m.(App); got.screen != ScreenLogin || cmd == nil {
+			t.Errorf("screen=%v cmd nil=%t, want login with cmd", got.screen, cmd == nil)
+		}
+	})
 }

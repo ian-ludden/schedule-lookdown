@@ -34,10 +34,14 @@ const (
 	ScreenMenu
 	ScreenSearch
 	ScreenResults
+	// ScreenStartup paints a spinner immediately while the saved session,
+	// username and history are loaded off the UI thread (keyring access can be
+	// slow, notably on WSL2). It routes to the menu or the auth flow when done.
+	ScreenStartup
 )
 
 func isAuthScreen(s Screen) bool {
-	return s == ScreenLogin || s == ScreenPassword || s == ScreenUsername || s == ScreenMFACode
+	return s == ScreenStartup || s == ScreenLogin || s == ScreenPassword || s == ScreenUsername || s == ScreenMFACode
 }
 
 type App struct {
@@ -94,6 +98,13 @@ func NewApp(session *auth.Session, cfg config.Config, initial Screen, fixtures m
 		search:         newSearchModel(),
 		results:        newResultsModel(),
 		historyPanel:   newHistoryPanelModel(),
+	}
+
+	if initial == ScreenStartup && !app.fixtureMode() {
+		// Keyring reads happen in loadStartupCmd so the first frame is not
+		// blocked on them; startupLoadedMsg fills in the rest.
+		app.login.status = "Loading saved session..."
+		return app
 	}
 
 	// Load persisted history.
@@ -168,6 +179,8 @@ func (a *App) applyDirectoryToSearch() {
 
 func (a App) Init() tea.Cmd {
 	switch a.screen {
+	case ScreenStartup:
+		return tea.Batch(a.login.spinner.Tick, loadStartupCmd(a.logger))
 	case ScreenLogin:
 		return a.login.Init()
 	case ScreenUsername:
@@ -194,7 +207,7 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if keyMsg.String() == "ctrl+c" {
 			return a, tea.Quit
 		}
-		if keyMsg.String() == "ctrl+h" && a.screen != ScreenLogin {
+		if keyMsg.String() == "ctrl+h" && a.screen != ScreenLogin && a.screen != ScreenStartup {
 			a.historyPanel.focused = !a.historyPanel.focused
 			return a, nil
 		}
@@ -226,7 +239,38 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return a, nil
 
+	case startupLoadedMsg:
+		if a.logger != nil {
+			a.logger.Printf("startup: loaded in %v (session=%t username=%t history=%t)",
+				msg.elapsed, msg.session != nil, msg.usernameErr == nil, msg.historyErr == nil)
+		}
+		if msg.historyErr == nil {
+			_ = a.history.unmarshal(msg.history)
+		}
+		a.historyPanel.entries = a.history.sorted()
+		if msg.usernameErr == nil {
+			a.storedUsername = msg.username
+		}
+		if msg.session != nil && msg.session.IsValid() {
+			a.session = msg.session
+			if msg.usernameErr != nil {
+				a.usernamePrompt = newUsernameModel()
+				a.screen = ScreenUsername
+				return a, a.usernamePrompt.Init()
+			}
+			a.screen = ScreenMenu
+			a.applyWindowSizeToMenu()
+			return a, tea.Batch(a.menu.Init(), a.maybeFetchRemoteDataCmd())
+		}
+		// No usable session: run the auth flow behind the same spinner.
+		a.login = newLoginModel(a.config.PersistChromeProfile)
+		a.screen = ScreenLogin
+		return a, a.login.Init()
+
 	case authSuccessMsg:
+		if a.logger != nil {
+			a.logger.Printf("auth: success")
+		}
 		a.session = msg.session
 		if a.storedUsername == "" {
 			stored, err := auth.RetrieveUsername()
@@ -446,7 +490,7 @@ func (a App) resetAndFetch(queryType string, params map[string]string, jumpToRos
 
 func (a App) delegateToScreen(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch a.screen {
-	case ScreenLogin:
+	case ScreenStartup, ScreenLogin:
 		m, cmd := a.login.Update(msg)
 		a.login = m.(loginModel)
 		return a, cmd
@@ -481,10 +525,13 @@ func (a App) delegateToScreen(msg tea.Msg) (tea.Model, tea.Cmd) {
 func (a App) View() string {
 	var mainContent string
 	switch a.screen {
-	case ScreenLogin:
+	case ScreenStartup, ScreenLogin:
 		mainContent = a.login.View()
 	case ScreenMenu:
 		mainContent = a.menu.View()
+		if !a.fixtureMode() && a.session != nil && !a.directoryDone {
+			mainContent += "\n" + helpStyle.Render("Loading people directory in the background...")
+		}
 	case ScreenSearch:
 		mainContent = a.search.View()
 	case ScreenUsername:
@@ -651,6 +698,30 @@ func fetchDirectoryCmd(session *auth.Session, term string, logger *log.Logger) t
 type directoryLoadedMsg struct {
 	people []models.Person
 	err    error
+}
+
+// startupLoadedMsg carries the keyring/file reads done at launch.
+type startupLoadedMsg struct {
+	session     *auth.Session
+	username    string
+	usernameErr error
+	history     []byte
+	historyErr  error
+	elapsed     time.Duration
+}
+
+// loadStartupCmd reads the saved session, username and history off the UI
+// thread so the first frame (a spinner) is drawn without waiting on the keyring.
+func loadStartupCmd(logger *log.Logger) tea.Cmd {
+	return func() tea.Msg {
+		start := time.Now()
+		var m startupLoadedMsg
+		m.session, _ = auth.LoadSession()
+		m.username, m.usernameErr = auth.RetrieveUsername()
+		m.history, m.historyErr = auth.RetrieveHistory()
+		m.elapsed = time.Since(start)
+		return m
+	}
 }
 
 // Message types for inter-screen transitions.

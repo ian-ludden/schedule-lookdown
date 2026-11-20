@@ -24,8 +24,8 @@ const registrationURL = "https://prodwebxe-hv.rose-hulman.edu/regweb-cgi/reg-sch
 const emailDomain = "@rose-hulman.edu"
 const authTimeout = 5 * time.Minute
 
-const pollingIntervalMS = 500
-const remoteTimeoutMS = 500
+const pollingIntervalMS = 250
+const remoteTimeoutMS = 100
 
 // browserInstallHint returns arch-appropriate install instructions.
 // Google Chrome only ships an official Linux amd64 deb; arm64 and other
@@ -667,6 +667,7 @@ func AuthenticateHeadless(ctx context.Context, username, password string, persis
 		mfaCodeFn = func() string { return "" }
 	}
 
+	statusFn("Launching browser...")
 	chromeCtx, cancel, err := launchHeadlessChrome(ctx, persist)
 	if err != nil {
 		return nil, err
@@ -808,6 +809,7 @@ func AuthenticateSilent(ctx context.Context, statusFn func(string)) ([]*http.Coo
 	if statusFn == nil {
 		statusFn = func(string) {}
 	}
+	statusFn("Launching browser...")
 	chromeCtx, cancel, err := launchHeadlessChrome(ctx, true)
 	if err != nil {
 		return nil, err

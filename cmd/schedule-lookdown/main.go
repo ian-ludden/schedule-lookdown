@@ -10,7 +10,6 @@ import (
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/luddenig/schedule-lookdown/internal/auth"
 	"github.com/luddenig/schedule-lookdown/internal/config"
 	"github.com/luddenig/schedule-lookdown/internal/ui"
 )
@@ -23,24 +22,20 @@ func main() {
 	// Load user config; defaults are used (and a default file written) on first run.
 	cfg, _ := config.Load()
 
-	var session *auth.Session
-	initial := ui.ScreenLogin
+	// Start on the startup spinner; the saved session is loaded off the UI
+	// thread so the first frame is not blocked on keyring access.
+	initial := ui.ScreenStartup
 
 	var fixtures map[string]string
 	if *loadSamples {
 		fixtures = discoverSamples("sample-responses")
 		initial = ui.ScreenMenu
-	} else {
-		session, _ = auth.LoadSession()
-		if session != nil && session.IsValid() {
-			initial = ui.ScreenMenu
-		}
 	}
 
 	var logger = createLogger(debugLogArg)
 
 	p := tea.NewProgram(
-		ui.NewApp(session, cfg, initial, fixtures, logger),
+		ui.NewApp(nil, cfg, initial, fixtures, logger),
 		tea.WithAltScreen(),
 	)
 	if _, err := p.Run(); err != nil {
