@@ -56,5 +56,9 @@ func (q *ScheduleLookup) Execute(ctx context.Context, c *client.Client) (Result,
 	}
 
 	meta, _ := client.ParseUserInfo(bytes.NewReader(body))
-	return Result{Columns: cols, Rows: rows, Metadata: meta}, nil
+	res := Result{Columns: cols, Rows: rows, Metadata: meta}
+	if g, err := client.ParseScheduleGrid(bytes.NewReader(body)); err == nil && len(g.Days) > 0 {
+		res.Grid = &g
+	}
+	return res, nil
 }
