@@ -2,6 +2,7 @@ package ui
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"maps"
@@ -43,7 +44,10 @@ type App struct {
 	screen         Screen
 	session        *auth.Session
 	config         config.Config
-	latestTerm     string // furthest-future term from reg-sched.pl; "" until fetched
+	latestTerm     string          // furthest-future term from reg-sched.pl; "" until fetched
+	directory      []models.Person // ad-hoc group people list; nil until fetched (or if the fetch failed)
+	directoryDone  bool            // directory fetch finished (successfully or not)
+	directoryErr   string          // reason the directory fetch failed; "" if ok or pending
 	storedUsername string
 	fixtures       map[string]string // query type → sample file path; nil means use real HTTP
 	logger         *log.Logger       // nil unless --debug was passed
@@ -84,7 +88,7 @@ func NewApp(session *auth.Session, cfg config.Config, initial Screen, fixtures m
 		config:         cfg,
 		fixtures:       fixtures,
 		logger:         logger,
-		login:          newLoginModel(),
+		login:          newLoginModel(cfg.PersistChromeProfile),
 		passwordPrompt: newPasswordModel(""),
 		menu:           newMenuModel(),
 		search:         newSearchModel(),
@@ -131,15 +135,35 @@ func (a App) resolvedDefaultTerm() string {
 	return models.CurrentTerm(time.Now())
 }
 
-// maybeFetchTermsCmd returns a command that fetches the latest available term
-// whenever a live session is available, else nil. The result populates
-// a.latestTerm, which is used both for default_term="latest" pre-selection and
-// to bound forward term navigation in the results screen.
-func (a App) maybeFetchTermsCmd() tea.Cmd {
+// maybeFetchRemoteDataCmd returns a command that fetches data cached for the
+// whole session whenever a live session is available, else nil:
+//   - the latest available term, stored in a.latestTerm (used for
+//     default_term="latest" pre-selection and to bound forward term navigation);
+//   - the ad-hoc group people directory, stored in a.directory.
+func (a App) maybeFetchRemoteDataCmd() tea.Cmd {
 	if a.fixtureMode() || a.session == nil {
 		return nil
 	}
-	return fetchDefaultTermCmd(a.session, a.logger)
+	return tea.Batch(
+		fetchDefaultTermCmd(a.session, a.logger),
+		fetchDirectoryCmd(a.session, a.resolvedDefaultTerm(), a.logger),
+	)
+}
+
+// applyDirectoryToSearch pushes the cached directory (or its load failure) into
+// the search form's picker. Until the fetch finishes the picker shows "loading".
+func (a *App) applyDirectoryToSearch() {
+	if !a.directoryDone {
+		if a.fixtureMode() {
+			a.search.setDirectory(nil, "not available in --load-samples mode")
+		}
+		return
+	}
+	people := a.directory
+	if a.directoryErr == "" && people == nil {
+		people = []models.Person{} // loaded but empty
+	}
+	a.search.setDirectory(people, a.directoryErr)
 }
 
 func (a App) Init() tea.Cmd {
@@ -153,7 +177,7 @@ func (a App) Init() tea.Cmd {
 	case ScreenMFACode:
 		return a.mfaCode.Init()
 	default:
-		return tea.Batch(a.menu.Init(), a.maybeFetchTermsCmd())
+		return tea.Batch(a.menu.Init(), a.maybeFetchRemoteDataCmd())
 	}
 }
 
@@ -193,6 +217,7 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if mainW > 0 {
 			a.menu.list.SetSize(mainW, a.height-4)
 		}
+		a.search.setSize(mainW, a.height)
 		if len(a.results.result.Columns) > 0 {
 			a.results = newResultsModelWithData(a.results.result, a.results.queryType, a.results.params, mainW, a.height, a.latestTerm)
 		} else {
@@ -214,10 +239,27 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		a.screen = ScreenMenu
 		a.applyWindowSizeToMenu()
-		return a, tea.Batch(a.menu.Init(), a.maybeFetchTermsCmd())
+		return a, tea.Batch(a.menu.Init(), a.maybeFetchRemoteDataCmd())
 
 	case termsLoadedMsg:
 		a.latestTerm = msg.latest
+		return a, nil
+
+	case directoryLoadedMsg:
+		a.directoryDone = true
+		if msg.err != nil {
+			a.directoryErr = msg.err.Error()
+			if a.logger != nil {
+				a.logger.Printf("directory fetch failed: %v", msg.err)
+			}
+		} else {
+			a.directory = msg.people
+			a.directoryErr = ""
+			if a.logger != nil {
+				a.logger.Printf("directory loaded: %d people", len(msg.people))
+			}
+		}
+		a.applyDirectoryToSearch()
 		return a, nil
 
 	case authFailedMsg:
@@ -227,6 +269,9 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// clear the stored password and re-prompt so the user can recover.
 		if auth.IsWSL2() && isCredentialError(msg.err) {
 			_ = auth.DeletePassword()
+			// A rejected password also invalidates the remembered Microsoft
+			// session; drop the saved Chrome profile so it can't go stale.
+			_ = auth.ForgetChromeProfile()
 			a.passwordPrompt = newPasswordModel(a.storedUsername)
 			a.passwordPrompt.err = msg.err
 			a.screen = ScreenPassword
@@ -236,6 +281,11 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m, cmd := a.login.Update(msg)
 		a.login = m.(loginModel)
 		return a, cmd
+
+	case silentAuthFailedMsg:
+		// The remembered sign-in is gone or expired; run the regular flow.
+		a.login.status = ""
+		return a, doCredentialAuthCmd(a.config.PersistChromeProfile)
 
 	case usernameNeededMsg:
 		a.usernamePrompt = newUsernameModel()
@@ -252,7 +302,7 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case passwordSubmittedMsg:
 		_ = auth.StorePassword(msg.password) // best-effort persistence; may fail without a keyring
-		a.login = newLoginModel()
+		a.login = newLoginModel(a.config.PersistChromeProfile)
 		a.screen = ScreenLogin
 		// Drive auth with the password we just collected rather than re-reading
 		// it from the keyring, which may be unavailable (e.g. WSL2 with no Secret
@@ -264,7 +314,7 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 		if username != "" {
-			return a, tea.Batch(a.login.spinner.Tick, doHeadlessAuthCmd(username, msg.password))
+			return a, tea.Batch(a.login.spinner.Tick, doHeadlessAuthCmd(username, msg.password, a.config.PersistChromeProfile))
 		}
 		return a, a.login.Init()
 
@@ -290,13 +340,13 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		_ = auth.StoreUsername(msg.username)
 		if a.session == nil && !a.fixtureMode() {
 			// Bypass keyring round-trip; drive auth with the username we just got.
-			a.login = newLoginModel()
+			a.login = newLoginModel(a.config.PersistChromeProfile)
 			a.screen = ScreenLogin
-			return a, tea.Batch(a.login.spinner.Tick, doAuthCmdForUsername(msg.username))
+			return a, tea.Batch(a.login.spinner.Tick, doAuthCmdForUsername(msg.username, a.config.PersistChromeProfile))
 		}
 		a.screen = ScreenMenu
 		a.applyWindowSizeToMenu()
-		return a, tea.Batch(a.menu.Init(), a.maybeFetchTermsCmd())
+		return a, tea.Batch(a.menu.Init(), a.maybeFetchRemoteDataCmd())
 
 	case usernameSkippedMsg:
 		if a.session == nil && !a.fixtureMode() {
@@ -309,6 +359,8 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case querySelectedMsg:
 		a.search = newSearchModelForQuery(msg.queryType, a.storedUsername, a.resolvedDefaultTerm(), a.latestTerm)
+		a.search.setSize(a.mainWidth(), a.height)
+		a.applyDirectoryToSearch()
 		a.screen = ScreenSearch
 		return a, a.search.Init()
 
@@ -548,6 +600,11 @@ func buildQuery(queryType string, params map[string]string) (query.Query, error)
 			Term:     params["term"],
 			LastName: params["last_name"],
 		}
+	case "adhoc_group":
+		q = &query.GroupGrid{
+			Term: params["term"],
+			IDs:  strings.Fields(params["ids"]),
+		}
 	default:
 		return nil, fmt.Errorf("unknown query type: %s", queryType)
 	}
@@ -573,6 +630,27 @@ func fetchDefaultTermCmd(session *auth.Session, logger *log.Logger) tea.Cmd {
 		}
 		return termsLoadedMsg{latest: models.LatestTerm(codes)}
 	}
+}
+
+// fetchDirectoryCmd fetches the ad-hoc group people directory once per session.
+// Failure is reported via directoryLoadedMsg.err; the app keeps working without it.
+func fetchDirectoryCmd(session *auth.Session, term string, logger *log.Logger) tea.Cmd {
+	return func() tea.Msg {
+		if session == nil {
+			return directoryLoadedMsg{err: errors.New("no session")}
+		}
+		c, err := client.New(session.Cookies, logger)
+		if err != nil {
+			return directoryLoadedMsg{err: err}
+		}
+		people, err := query.FetchDirectory(context.Background(), c, term)
+		return directoryLoadedMsg{people: people, err: err}
+	}
+}
+
+type directoryLoadedMsg struct {
+	people []models.Person
+	err    error
 }
 
 // Message types for inter-screen transitions.

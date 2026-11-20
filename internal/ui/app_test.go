@@ -197,6 +197,17 @@ func TestAppTermNavIntegration(t *testing.T) {
 	}
 }
 
+func TestBuildQueryAdHocGroup(t *testing.T) {
+	q, err := buildQuery("adhoc_group", map[string]string{"term": "202710", "ids": "11 22 33"})
+	if err != nil {
+		t.Fatalf("buildQuery: %v", err)
+	}
+	g, ok := q.(*query.GroupGrid)
+	if !ok || g.Term != "202710" || strings.Join(g.IDs, ",") != "11,22,33" {
+		t.Errorf("got %#v", q)
+	}
+}
+
 // TestRosterViewKeepsHistoryPanelOnScreen is a regression test for issue #53:
 // the roster view's help line ("↑/↓ navigate • ... • ctrl+s: download roster")
 // is the longest of any query type, and rendering it without a width cap made

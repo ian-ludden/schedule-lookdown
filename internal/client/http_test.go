@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"testing"
 )
 
@@ -70,5 +71,38 @@ func TestDownloadRosterNon200(t *testing.T) {
 
 	if _, err := c.DownloadRoster(context.Background(), "CSSE220-01"); err == nil {
 		t.Error("expected error on non-200 response, got nil")
+	}
+}
+
+func TestPost(t *testing.T) {
+	var gotMethod, gotCT, gotAdHoc, gotTerm string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotMethod = r.Method
+		gotCT = r.Header.Get("Content-Type")
+		_ = r.ParseForm()
+		gotAdHoc = r.PostFormValue("ad_hoc")
+		gotTerm = r.PostFormValue("termcode")
+		_, _ = w.Write([]byte("ok"))
+	}))
+	defer srv.Close()
+
+	c, err := New(nil, nil)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	u, _ := url.Parse(srv.URL)
+	c.base = u
+
+	resp, err := c.Post(context.Background(), url.Values{"termcode": {"202710"}, "ad_hoc": {"Ad-hoc Group Schedules"}})
+	if err != nil {
+		t.Fatalf("Post: %v", err)
+	}
+	resp.Body.Close()
+
+	if gotMethod != http.MethodPost || gotCT != "application/x-www-form-urlencoded" {
+		t.Errorf("method=%q content-type=%q", gotMethod, gotCT)
+	}
+	if gotAdHoc != "Ad-hoc Group Schedules" || gotTerm != "202710" {
+		t.Errorf("form values: ad_hoc=%q termcode=%q", gotAdHoc, gotTerm)
 	}
 }

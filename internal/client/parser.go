@@ -1,6 +1,7 @@
 package client
 
 import (
+	"errors"
 	"io"
 	"strconv"
 	"strings"
@@ -107,6 +108,137 @@ func ParseTermOptions(r io.Reader) ([]string, error) {
 		codes = append(codes, val)
 	})
 	return codes, nil
+}
+
+// ParseUserOptions extracts the people listed in the ad-hoc group page's
+// <select name="id6"> multi-select. Option text is "Last, First" optionally
+// followed by a "(YR-MAJOR)" parenthetical for students, padded with spaces; the
+// server truncates long names at a fixed width, which can cut the parenthetical
+// mid-way (handled by dropping an unterminated "(..."). Options with an empty
+// value are skipped.
+func ParseUserOptions(r io.Reader) ([]models.Person, error) {
+	doc, err := goquery.NewDocumentFromReader(r)
+	if err != nil {
+		return nil, err
+	}
+
+	var people []models.Person
+	doc.Find("select[name='id6'] option").Each(func(_ int, opt *goquery.Selection) {
+		id, ok := opt.Attr("value")
+		id = strings.TrimSpace(id)
+		if !ok || id == "" {
+			return
+		}
+		text := strings.Join(strings.Fields(opt.Text()), " ")
+		if text == "" {
+			return
+		}
+
+		p := models.Person{ID: id}
+		if i := strings.LastIndex(text, " ("); i >= 0 {
+			detail := text[i+2:]
+			if strings.HasSuffix(detail, ")") {
+				p.Detail = strings.TrimSuffix(detail, ")")
+			}
+			text = text[:i]
+		}
+		if last, first, found := strings.Cut(text, ", "); found {
+			p.Last, p.First = last, first
+		} else {
+			p.Last = text
+		}
+		people = append(people, p)
+	})
+	return people, nil
+}
+
+// ParseGroupSchedule parses the page returned by the ad-hoc group grid request
+// (type=gr_Grid). It holds two BORDER=1 tables: a roster of the group's members
+// (USERNAME, NAME, BANNER ID, ..., EMAIL) and the merged term grid, whose cells
+// are nested tables listing "username in ROOM" per occupant. The server shades
+// (BGCOLOR) a nested table when two or more people share the slot.
+func ParseGroupSchedule(r io.Reader) (models.GroupSchedule, error) {
+	var g models.GroupSchedule
+	doc, err := goquery.NewDocumentFromReader(r)
+	if err != nil {
+		return g, err
+	}
+
+	tables := doc.Find("table[border]")
+	if tables.Length() < 2 {
+		return g, errors.New("group page has no roster and grid tables (session expired or page changed?)")
+	}
+
+	// Rows belonging directly to a table (not to cell tables nested inside it).
+	directRows := func(t *goquery.Selection) *goquery.Selection {
+		if body := t.ChildrenFiltered("tbody"); body.Length() > 0 {
+			return body.ChildrenFiltered("tr")
+		}
+		return t.ChildrenFiltered("tr")
+	}
+
+	// Roster: header row, then one row per member.
+	cols := map[string]int{}
+	directRows(tables.Eq(0)).Each(func(i int, tr *goquery.Selection) {
+		if i == 0 {
+			tr.ChildrenFiltered("th").Each(func(j int, th *goquery.Selection) {
+				cols[strings.ToUpper(strings.TrimSpace(th.Text()))] = j
+			})
+			return
+		}
+		tds := tr.ChildrenFiltered("td")
+		cell := func(name string) string {
+			j, ok := cols[name]
+			if !ok || j >= tds.Length() {
+				return ""
+			}
+			return strings.Join(strings.Fields(tds.Eq(j).Text()), " ")
+		}
+		m := models.GroupMember{
+			Username: cell("USERNAME"),
+			Name:     cell("NAME"),
+			BannerID: cell("BANNER ID"),
+			Email:    cell("EMAIL"),
+		}
+		if m.Username != "" {
+			g.Members = append(g.Members, m)
+		}
+	})
+
+	// Grid: header row of hours, then one row per day.
+	directRows(tables.Eq(1)).Each(func(i int, tr *goquery.Selection) {
+		if i == 0 {
+			tr.ChildrenFiltered("th").Each(func(j int, th *goquery.Selection) {
+				if j > 0 { // first header is the "TERM GRID" corner label
+					g.Hours = append(g.Hours, strings.TrimSpace(th.Text()))
+				}
+			})
+			return
+		}
+		g.Days = append(g.Days, strings.TrimSpace(tr.ChildrenFiltered("th").First().Text()))
+		var row []models.GroupCell
+		tr.ChildrenFiltered("td").Each(func(_ int, td *goquery.Selection) {
+			var c models.GroupCell
+			if bg, ok := td.Find("table").First().Attr("bgcolor"); ok && strings.TrimSpace(bg) != "" {
+				c.Conflict = true
+			}
+			td.Find("table td").Each(func(_ int, e *goquery.Selection) {
+				text := strings.Join(strings.Fields(e.Text()), " ")
+				if text == "" {
+					return
+				}
+				user, room, _ := strings.Cut(text, " in ")
+				c.Entries = append(c.Entries, models.GroupEntry{Username: user, Room: room})
+			})
+			row = append(row, c)
+		})
+		g.Cells = append(g.Cells, row)
+	})
+
+	if len(g.Days) == 0 {
+		return g, errors.New("group page grid has no day rows")
+	}
+	return g, nil
 }
 
 // ParseSections parses the schedule table from a reg-sched.pl response into

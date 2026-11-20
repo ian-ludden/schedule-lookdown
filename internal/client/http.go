@@ -27,12 +27,18 @@ type Client struct {
 }
 
 func New(cookies []*http.Cookie, logger *log.Logger) (*Client, error) {
+	return NewWithBaseURL(baseURL, cookies, logger)
+}
+
+// NewWithBaseURL is New with an explicit endpoint, so tests in other packages
+// can point a client at a local httptest server.
+func NewWithBaseURL(rawBase string, cookies []*http.Cookie, logger *log.Logger) (*Client, error) {
 	jar, err := cookiejar.New(nil)
 	if err != nil {
 		return nil, err
 	}
 
-	base, err := url.Parse(baseURL)
+	base, err := url.Parse(rawBase)
 	if err != nil {
 		return nil, err
 	}
@@ -88,6 +94,41 @@ func (c *Client) Get(ctx context.Context, params url.Values) (*http.Response, er
 	}
 	if c.logger != nil {
 		c.logger.Printf("GET response: status=%d", resp.StatusCode)
+	}
+	return resp, nil
+}
+
+// Post issues a form-encoded POST to reg-sched.pl with the given fields.
+// If a fixture path is set, the file is returned instead of hitting the network.
+func (c *Client) Post(ctx context.Context, form url.Values) (*http.Response, error) {
+	if c.fixturePath != "" {
+		if c.logger != nil {
+			c.logger.Printf("POST (fixture) form=%s", form.Encode())
+		}
+		f, err := os.Open(c.fixturePath)
+		if err != nil {
+			return nil, err
+		}
+		return &http.Response{StatusCode: http.StatusOK, Body: f}, nil
+	}
+
+	if c.logger != nil {
+		c.logger.Printf("POST %s body=%s", c.base.String(), form.Encode())
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.base.String(), strings.NewReader(form.Encode()))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	resp, err := c.http.Do(req)
+	if err != nil {
+		if c.logger != nil {
+			c.logger.Printf("POST error: %v", err)
+		}
+		return nil, err
+	}
+	if c.logger != nil {
+		c.logger.Printf("POST response: status=%d", resp.StatusCode)
 	}
 	return resp, nil
 }

@@ -2,6 +2,7 @@ package ui
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/charmbracelet/bubbles/spinner"
@@ -51,6 +52,7 @@ var preferredWidths = map[string]int{
 	"YEAR":                6,
 	"ADVISOR":             10,
 	"EMAIL":               30,
+	"DAY":                 7,
 }
 
 // columnPriority controls which columns absorb width compression first.
@@ -70,11 +72,12 @@ type resultsModel struct {
 	result      query.Result
 	queryType   string
 	params      map[string]string
-	meta        string // styled metadata header rendered above the table
-	latestTerm  string // furthest-future available term; "" means no upper bound
-	termWarning string // transient message shown when forward nav is blocked
-	flashMsg    string // transient feedback (e.g. roster download result)
-	flashErr    bool   // styles flashMsg as an error when true
+	meta        string        // styled metadata header rendered above the table
+	colors      *groupColorer // per-person username colors (ad-hoc group results only)
+	latestTerm  string        // furthest-future available term; "" means no upper bound
+	termWarning string        // transient message shown when forward nav is blocked
+	flashMsg    string        // transient feedback (e.g. roster download result)
+	flashErr    bool          // styles flashMsg as an error when true
 	err         error
 	spinner     spinner.Model
 	loading     bool
@@ -92,6 +95,7 @@ func newResultsModel() resultsModel {
 
 func newResultsModelWithData(result query.Result, queryType string, params map[string]string, width, height int, latestTerm string) resultsModel {
 	m := resultsModel{result: result, queryType: queryType, params: params, width: width, height: height, latestTerm: latestTerm}
+	m.colors = newGroupColorer(result.Group)
 	m.meta = renderMetadataBlock(queryType, result, params, width)
 	m.table = buildResultsTable(result, width, height, metaReservedLines(m.meta))
 	return m
@@ -119,6 +123,15 @@ func buildResultsTable(result query.Result, width, height, reserved int) table.M
 	rows := make([]table.Row, len(result.Rows))
 	for i, r := range result.Rows {
 		rows[i] = table.Row(r)
+		// Size each rule row to its columns exactly; an over-long string would
+		// be truncated with a trailing ellipsis.
+		if result.Mode == query.ModeGroup && query.IsGroupSeparator(r) {
+			rule := make(table.Row, len(cols))
+			for j, c := range cols {
+				rule[j] = strings.Repeat("─", max(c.Width, 0))
+			}
+			rows[i] = rule
+		}
 	}
 
 	tableHeight := max(1, height-resultsOverheadLines-reserved)
@@ -502,9 +515,29 @@ func (m resultsModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 
 	// Forward any other keys to the table
+	prev := m.table.Cursor()
 	var cmd tea.Cmd
 	m.table, cmd = m.table.Update(msg)
+	m.skipGroupSeparator(prev)
 	return m, cmd
+}
+
+// skipGroupSeparator steps the cursor past a group grid's rule row, continuing
+// in the direction it was moving (prev is the cursor before the key press).
+func (m *resultsModel) skipGroupSeparator(prev int) {
+	if m.result.Mode != query.ModeGroup {
+		return
+	}
+	rows := m.table.Rows()
+	c := m.table.Cursor()
+	if c < 0 || c >= len(rows) || !query.IsGroupSeparator(rows[c]) {
+		return
+	}
+	if c >= prev {
+		m.table.MoveDown(1)
+	} else {
+		m.table.MoveUp(1)
+	}
 }
 
 func (m resultsModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -584,6 +617,8 @@ func metadataContent(queryType string, result query.Result, params map[string]st
 		// "Sections" appears only on the combined roster, where the metadata layer
 		// populates it; single-section rosters omit it.
 		add("Sections", meta["sections"])
+	case "adhoc_group":
+		add("Members", groupMembersLegend(result, meta["members"]))
 	case "course_search":
 		term := params["course_code"]
 		if term == "" {
@@ -653,6 +688,8 @@ func queryResultTitle(queryType string, params map[string]string) string {
 			return "Person Search — " + ln + "*"
 		}
 		return "Person Search"
+	case "adhoc_group":
+		return "Ad-Hoc Group Schedule"
 	}
 	return "Results"
 }
@@ -747,7 +784,7 @@ func (m resultsModel) View() string {
 		footer += "\n" + style.Render(m.flashMsg)
 	}
 	return prefix + header +
-		resultsBaseStyle.Render(m.table.View()) +
+		resultsBaseStyle.Render(m.colors.colorize(m.table.View())) +
 		"\n" + footer
 }
 
@@ -777,3 +814,22 @@ func (m resultsModel) renderDetail() string {
 }
 
 var _ tea.Model = resultsModel{}
+
+// groupMembersLegend lists a group's usernames alphabetically, each in the color
+// used for that person in the grid, so the header doubles as a legend. It falls
+// back to the plain roster string when no structured group data is available.
+func groupMembersLegend(result query.Result, plain string) string {
+	if result.Group == nil || len(result.Group.Members) == 0 {
+		return plain
+	}
+	colors := newGroupColorer(result.Group)
+	names := make([]string, len(result.Group.Members))
+	for i, m := range result.Group.Members {
+		names[i] = m.Username
+	}
+	sort.Strings(names)
+	for i, n := range names {
+		names[i] = colors.name(n)
+	}
+	return strings.Join(names, ", ")
+}

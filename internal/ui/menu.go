@@ -19,6 +19,7 @@ var queryTypes = []list.Item{
 	queryItem{name: "Course Search", key: "course_search"},
 	queryItem{name: "Schedule Lookup", key: "schedule_lookup"},
 	queryItem{name: "Roster View", key: "roster_view"},
+	queryItem{name: "Ad-Hoc Group Schedules", key: "adhoc_group"},
 }
 
 type menuModel struct {

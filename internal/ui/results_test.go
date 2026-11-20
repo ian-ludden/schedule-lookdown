@@ -591,3 +591,33 @@ func expectSearchSubmitted(t *testing.T, m resultsModel, key tea.KeyMsg) searchS
 	}
 	return ss
 }
+
+func TestGroupResultSeparatorRowsMatchColumnWidth(t *testing.T) {
+	res := query.Result{
+		Columns: []string{"DAY", "8:00"},
+		Rows: [][]string{
+			{"MONDAY", "a"},
+			{"────", "────"},
+			{"TUESDAY", "a"},
+		},
+		Mode: query.ModeGroup,
+	}
+	m := newResultsModelWithData(res, "adhoc_group", nil, 80, 30, "")
+	rows := m.table.Rows()
+	for i, cell := range rows[1] {
+		if strings.Contains(cell, "…") || cell == "" {
+			t.Errorf("rule cell %d = %q", i, cell)
+		}
+	}
+
+	// Moving down from the first lane skips the rule row.
+	n, _ := m.Update(tea.KeyMsg{Type: tea.KeyDown})
+	if got := n.(resultsModel).table.Cursor(); got != 2 {
+		t.Errorf("cursor after down = %d, want 2 (rule row skipped)", got)
+	}
+	// ...and moving up from there skips it again.
+	n, _ = n.(resultsModel).Update(tea.KeyMsg{Type: tea.KeyUp})
+	if got := n.(resultsModel).table.Cursor(); got != 0 {
+		t.Errorf("cursor after up = %d, want 0", got)
+	}
+}

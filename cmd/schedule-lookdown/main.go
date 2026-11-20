@@ -49,8 +49,9 @@ func main() {
 	}
 }
 
-// createLogger constructs a debugging log file and
-// defers closing it to avoid resource leaks.
+// createLogger opens the debugging log file. The file is intentionally left
+// open for the life of the process (the OS closes it on exit); closing it here
+// would make every later logger write fail silently.
 func createLogger(logFilename *string) *log.Logger {
 	if *logFilename == "" {
 		return nil
@@ -62,7 +63,6 @@ func createLogger(logFilename *string) *log.Logger {
 		fmt.Fprintf(os.Stderr, "cannot open debug log: %v\n", err)
 		os.Exit(1)
 	}
-	defer f.Close()
 	logger = log.New(f, "", log.Ldate|log.Ltime|log.Lmicroseconds)
 	logger.Println("=== schedule-lookdown debug log started ===")
 
