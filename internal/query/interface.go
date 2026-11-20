@@ -26,6 +26,9 @@ type Result struct {
 	// Group carries the structured merged grid for ad-hoc group queries (nil
 	// otherwise). Columns/Rows hold a flattened rendering of the same data.
 	Group *models.GroupSchedule
+	// Grid carries the term grid of an individual schedule lookup (nil when the
+	// page had none). Entries' Username field holds the course code.
+	Grid *models.GroupSchedule
 }
 
 // Result modes.

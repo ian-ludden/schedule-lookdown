@@ -73,6 +73,7 @@ type resultsModel struct {
 	queryType   string
 	params      map[string]string
 	meta        string        // styled metadata header rendered above the table
+	grid        string        // rendered term grid shown below the table (individual schedules)
 	colors      *groupColorer // per-person username colors (ad-hoc group results only)
 	latestTerm  string        // furthest-future available term; "" means no upper bound
 	termWarning string        // transient message shown when forward nav is blocked
@@ -97,7 +98,10 @@ func newResultsModelWithData(result query.Result, queryType string, params map[s
 	m := resultsModel{result: result, queryType: queryType, params: params, width: width, height: height, latestTerm: latestTerm}
 	m.colors = newGroupColorer(result.Group)
 	m.meta = renderMetadataBlock(queryType, result, params, width)
-	m.table = buildResultsTable(result, width, height, metaReservedLines(m.meta))
+	reserved := metaReservedLines(m.meta)
+	var gridH int
+	m.grid, gridH = scheduleGridFor(result, queryType, width, height, reserved)
+	m.table = buildResultsTable(result, width, height, reserved+gridH)
 	return m
 }
 
@@ -313,7 +317,10 @@ func (m resultsModel) handleResize(msg tea.WindowSizeMsg) tea.Model {
 	m.height = msg.Height
 	if len(m.result.Columns) > 0 {
 		m.meta = renderMetadataBlock(m.queryType, m.result, m.params, m.width)
-		m.table = buildResultsTable(m.result, m.width, m.height, metaReservedLines(m.meta))
+		reserved := metaReservedLines(m.meta)
+		var gridH int
+		m.grid, gridH = scheduleGridFor(m.result, m.queryType, m.width, m.height, reserved)
+		m.table = buildResultsTable(m.result, m.width, m.height, reserved+gridH)
 	}
 	return m
 }
@@ -783,9 +790,11 @@ func (m resultsModel) View() string {
 		}
 		footer += "\n" + style.Render(m.flashMsg)
 	}
-	return prefix + header +
-		resultsBaseStyle.Render(m.colors.colorize(m.table.View())) +
-		"\n" + footer
+	body := resultsBaseStyle.Render(m.colors.colorize(m.table.View()))
+	if m.grid != "" {
+		body += "\n" + m.grid + "\n"
+	}
+	return prefix + header + body + "\n" + footer
 }
 
 // renderDetail returns a string with all columns and their values for the

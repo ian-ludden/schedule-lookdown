@@ -81,6 +81,33 @@ func IsGroupSeparator(row []string) bool {
 // order. Day names are abbreviated ("WEDNESDAY" -> "WED"), days with no entries
 // are omitted, and a rule row separates the remaining days.
 func groupResult(g models.GroupSchedule) Result {
+	cols, rows := FlattenGrid(g)
+	members := make([]string, len(g.Members))
+	for i, m := range g.Members {
+		members[i] = m.Username
+	}
+	return Result{
+		Columns:  cols,
+		Rows:     rows,
+		Metadata: map[string]string{"members": strings.Join(members, ", ")},
+		Mode:     ModeGroup,
+		Group:    &g,
+	}
+}
+
+// FlattenGrid turns a term grid into DAY + hour columns and stacked rows (see
+// groupResult for the layout rules).
+func FlattenGrid(g models.GroupSchedule) ([]string, [][]string) {
+	return flattenGrid(g, false)
+}
+
+// FlattenGridAllDays is FlattenGrid but keeps days with no entries (as a single
+// blank row).
+func FlattenGridAllDays(g models.GroupSchedule) ([]string, [][]string) {
+	return flattenGrid(g, true)
+}
+
+func flattenGrid(g models.GroupSchedule, keepEmpty bool) ([]string, [][]string) {
 	cols := append([]string{"DAY"}, g.Hours...)
 	var rows [][]string
 	for d, day := range g.Days {
@@ -97,7 +124,10 @@ func groupResult(g models.GroupSchedule) Result {
 			depth = max(depth, len(names))
 		}
 		if depth == 0 {
-			continue
+			if !keepEmpty {
+				continue
+			}
+			depth = 1
 		}
 
 		if len(rows) > 0 {
@@ -124,17 +154,7 @@ func groupResult(g models.GroupSchedule) Result {
 		}
 	}
 
-	members := make([]string, len(g.Members))
-	for i, m := range g.Members {
-		members[i] = m.Username
-	}
-	return Result{
-		Columns:  cols,
-		Rows:     rows,
-		Metadata: map[string]string{"members": strings.Join(members, ", ")},
-		Mode:     ModeGroup,
-		Group:    &g,
-	}
+	return cols, rows
 }
 
 // abbreviateDay shortens a day name to its first three letters, upper-cased
