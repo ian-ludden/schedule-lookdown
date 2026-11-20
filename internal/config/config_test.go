@@ -162,3 +162,27 @@ func writeConfig(t *testing.T, dir, contents string) {
 		t.Fatalf("write config: %v", err)
 	}
 }
+
+func TestPersistChromeProfileSetting(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", dir)
+
+	if Default().PersistChromeProfile {
+		t.Error("PersistChromeProfile should default to false")
+	}
+
+	cfgDir := filepath.Join(dir, "schedule-lookdown")
+	if err := os.MkdirAll(cfgDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(cfgDir, "config.toml"), []byte("persist_chrome_profile = true\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if !cfg.PersistChromeProfile {
+		t.Error("persist_chrome_profile = true was not honoured")
+	}
+}

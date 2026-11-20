@@ -3,6 +3,7 @@ package auth
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -11,8 +12,10 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"syscall"
 	"time"
 
+	"github.com/chromedp/cdproto/browser"
 	"github.com/chromedp/cdproto/network"
 	"github.com/chromedp/chromedp"
 )
@@ -150,14 +153,6 @@ const diagSnapshotJS = `(function(){
 		+' otcvis='+(otc?(otc.offsetParent!==null?'1':'0'):'-');
 })()`
 
-// awaitPwdPageJS polls until Microsoft's login page shows either a password
-// field, a Windows-Hello bypass link, or a username-not-found error.
-const awaitPwdPageJS = `
-	document.querySelector('#i0118') !== null ||
-	document.querySelector('#idA_PWD_SwitchToPassword') !== null ||
-	(document.querySelector('#usernameError') !== null &&
-	 document.querySelector('#usernameError').offsetParent !== null)`
-
 // detectStateJS classifies the current Microsoft auth page for the MFA state
 // machine. It always returns a non-empty string so the caller can use Evaluate
 // (single-shot) instead of Poll, enabling status updates between iterations.
@@ -165,6 +160,8 @@ const awaitPwdPageJS = `
 // Return values:
 //
 //	"done"                         — back on registrationURL; auth complete
+//	"email_page"                   — email field (#i0116) visible; need to type the email
+//	"switch_to_pwd"                — "use your password instead" link visible (no password field yet)
 //	"kmsi"                         — "Stay signed in?" auto-clicked; keep looping
 //	"pick_method"                  — "Use a different verification method" link visible
 //	"sms_tile"                     — SMS tile directly clickable
@@ -181,6 +178,9 @@ const detectStateJS = `(function(){
 		var pe = document.getElementById('passwordError');
 		if (pe && pe.offsetParent !== null && pe.textContent.trim())
 			return 'error:' + pe.textContent.trim();
+		var ue = document.getElementById('usernameError');
+		if (ue && ue.offsetParent !== null && ue.textContent.trim())
+			return 'error:' + ue.textContent.trim();
 		var cfg = window.$Config;
 		if (cfg && cfg.pgid === 'ConvergedError' && cfg.iErrorCode)
 			return 'error:Microsoft error ' + cfg.iErrorCode + ': ' + (cfg.strServiceExceptionMessage || cfg.strMainMessage || '');
@@ -201,6 +201,14 @@ const detectStateJS = `(function(){
 		if (aadTile !== null && aadTile.offsetParent !== null) return 'aad_tile';
 		var btn9 = document.getElementById('idSIButton9');
 		var btn9val = btn9 ? (btn9.value || btn9.innerText || '').trim() : '';
+		// Email entry: detected structurally (visible #i0116 + usable submit),
+		// not by label, for the same Knockout-binding reason as pwd_page.
+		var i0116 = document.getElementById('i0116');
+		if (i0116 !== null && i0116.offsetParent !== null &&
+				btn9 && !btn9.disabled && btn9.offsetParent !== null) return 'email_page';
+		var swp = document.getElementById('idA_PWD_SwitchToPassword');
+		if (swp !== null && swp.offsetParent !== null &&
+				document.getElementById('i0118') === null) return 'switch_to_pwd';
 		// Visible password field + a visible, enabled submit button means
 		// credential entry is required. Detect this structurally rather than
 		// by the button's label: idSIButton9's value is Knockout-bound, so it
@@ -327,7 +335,11 @@ func sanitizeState(s string) string {
 // launchHeadlessChrome starts a headless Chrome instance connected via the
 // Chrome DevTools Protocol and returns a ready chromedp context. The caller
 // must invoke the returned cancel func to stop Chrome and clean up resources.
-func launchHeadlessChrome(ctx context.Context) (chromeCtx context.Context, cancel func(), err error) {
+//
+// With persist == false a throwaway profile is used and deleted on exit. With
+// persist == true the profile under profileDir() is reused and kept, so
+// Microsoft's persistent sign-in cookie survives between runs.
+func launchHeadlessChrome(ctx context.Context, persist bool) (chromeCtx context.Context, cancel func(), err error) {
 	browserPath, err := findBrowser()
 	if err != nil {
 		return nil, nil, err
@@ -336,12 +348,27 @@ func launchHeadlessChrome(ctx context.Context) (chromeCtx context.Context, cance
 	if err != nil {
 		return nil, nil, fmt.Errorf("find free port: %w", err)
 	}
-	// Isolated profile dir prevents a singleton conflict with any running
-	// Chrome and keeps this instance away from the user's normal profile.
-	tmpDir, err := os.MkdirTemp("", "schedule-lookdown-chrome-")
-	if err != nil {
-		return nil, nil, fmt.Errorf("create chrome temp dir: %w", err)
+
+	var userDir string
+	removeDir := false
+	if persist {
+		if userDir, err = profileDir(); err != nil {
+			return nil, nil, fmt.Errorf("chrome profile dir: %w", err)
+		}
+		// A crashed run can leave Singleton* files that make Chrome refuse the
+		// profile; clear them only when their owner is dead.
+		if err := clearStaleSingleton(userDir); err != nil {
+			return nil, nil, err
+		}
+	} else {
+		// Isolated profile dir prevents a singleton conflict with any running
+		// Chrome and keeps this instance away from the user's normal profile.
+		if userDir, err = os.MkdirTemp("", "schedule-lookdown-chrome-"); err != nil {
+			return nil, nil, fmt.Errorf("create chrome temp dir: %w", err)
+		}
+		removeDir = true
 	}
+
 	cmd := exec.CommandContext(ctx, browserPath,
 		"--headless=new",
 		"--no-sandbox",
@@ -349,7 +376,7 @@ func launchHeadlessChrome(ctx context.Context) (chromeCtx context.Context, cance
 		"--no-first-run",
 		"--no-default-browser-check",
 		fmt.Sprintf("--remote-debugging-port=%d", port),
-		fmt.Sprintf("--user-data-dir=%s", tmpDir),
+		fmt.Sprintf("--user-data-dir=%s", userDir),
 		// Prevent Chrome from trying to unlock the GNOME keyring (or any
 		// other libsecret backend). On Ubuntu/WSL2 with gnome-keyring
 		// installed, Chrome 130+ attempts to unlock it on startup and
@@ -361,107 +388,144 @@ func launchHeadlessChrome(ctx context.Context) (chromeCtx context.Context, cance
 		"--user-agent=Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36",
 	)
 	if err := cmd.Start(); err != nil {
-		_ = os.RemoveAll(tmpDir)
+		if removeDir {
+			_ = os.RemoveAll(userDir)
+		}
 		return nil, nil, fmt.Errorf("start headless Chrome: %w", err)
 	}
+	// Reap the process exactly once; exited closes when Chrome is gone.
+	exited := make(chan struct{})
+	go func() {
+		_ = cmd.Wait()
+		close(exited)
+	}()
+
+	var chromeCtxRef context.Context
 	cleanup := func() {
-		cmd.Process.Kill()
-		os.RemoveAll(tmpDir)
+		stopChrome(chromeCtxRef, cmd, exited, persist)
+		if removeDir {
+			_ = os.RemoveAll(userDir)
+		}
 	}
-	// Both Chrome and chromedp are in WSL2 — plain localhost works.
-	wsURL, err := waitForDebugger(ctx, port)
+
+	// Both Chrome and chromedp are in WSL2 — plain localhost works. Abort the
+	// wait early if Chrome exits (e.g. it refused the profile).
+	waitCtx, cancelWait := context.WithCancel(ctx)
+	go func() {
+		select {
+		case <-exited:
+			cancelWait()
+		case <-waitCtx.Done():
+		}
+	}()
+	wsURL, err := waitForDebugger(waitCtx, port)
+	cancelWait()
 	if err != nil {
 		cleanup()
+		select {
+		case <-exited:
+			return nil, nil, fmt.Errorf("headless Chrome exited during startup (profile %s): %w", userDir, err)
+		default:
+		}
 		return nil, nil, err
 	}
 	allocCtx, cancelAlloc := chromedp.NewRemoteAllocator(ctx, wsURL)
 	chromeCtx, cancelChrome := chromedp.NewContext(allocCtx)
+	chromeCtxRef = chromeCtx
 	return chromeCtx, func() {
+		// Ask Chrome to quit first (while the CDP connection is still open) so
+		// it flushes cookies, then drop the chromedp contexts.
+		cleanup()
 		cancelChrome()
 		cancelAlloc()
-		cleanup()
 	}, nil
 }
 
-// enterEmailAndPassword navigates to the registration URL, enters the given
-// email address, handles whichever password-entry variant Microsoft presents
-// (direct field, Windows-Hello bypass link, or username error), submits the
-// password, and waits until the page has moved past the password step.
-func enterEmailAndPassword(ctx context.Context, email, password string, statusFn func(string)) error {
+// gracefulQuitTimeout bounds how long Chrome gets to exit on its own before
+// being killed.
+const gracefulQuitTimeout = 5 * time.Second
+
+// stopChrome shuts Chrome down so it can flush its cookie database: Browser.close
+// over CDP, then SIGTERM, then SIGKILL after gracefulQuitTimeout. For a
+// throwaway profile (persist == false) nothing needs flushing, so it is killed
+// immediately as before.
+func stopChrome(chromeCtx context.Context, cmd *exec.Cmd, exited <-chan struct{}, persist bool) {
+	if !persist {
+		_ = cmd.Process.Kill()
+		<-exited
+		return
+	}
+	if chromeCtx != nil {
+		closeCtx, cancel := context.WithTimeout(chromeCtx, 2*time.Second)
+		// The connection drops as Chrome quits, so an error here is expected.
+		_ = chromedp.Run(closeCtx, chromedp.ActionFunc(func(ctx context.Context) error {
+			return browser.Close().Do(ctx)
+		}))
+		cancel()
+	}
+	select {
+	case <-exited:
+		return
+	case <-time.After(gracefulQuitTimeout / 2):
+	}
+	_ = cmd.Process.Signal(syscall.SIGTERM)
+	select {
+	case <-exited:
+	case <-time.After(gracefulQuitTimeout / 2):
+		_ = cmd.Process.Kill()
+		<-exited
+	}
+}
+
+// handleEmailPage types the email into #i0116 and clicks Next, then updates
+// last. Throttled with a 10 s cooldown: the email field stays visible while the
+// page transitions, and re-typing would double-submit.
+func handleEmailPage(ctx context.Context, email string, last *time.Time, statusFn func(string)) {
+	if time.Since(*last) < 10*time.Second {
+		return
+	}
 	statusFn("Signing in as " + email + "...")
-
-	// Step 1: navigate and enter email address.
-	if err := chromedp.Run(ctx,
-		chromedp.Navigate(registrationURL),
-		chromedp.WaitVisible(`#i0116`),
+	typeCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	_ = chromedp.Run(typeCtx,
+		chromedp.Focus(`#i0116`),
+		chromedp.Evaluate(`(function(){
+			var f=document.getElementById('i0116');
+			if(f){f.value='';f.dispatchEvent(new Event('input',{bubbles:true}));}
+		})()`, nil),
 		chromedp.SendKeys(`#i0116`, email),
-		chromedp.Click(`#idSIButton9`),
-	); err != nil {
-		return fmt.Errorf("email entry: %w", err)
-	}
+	)
+	cancel()
+	time.Sleep(200 * time.Millisecond)
+	clickCtx, cancel2 := context.WithTimeout(ctx, 3*time.Second)
+	_ = chromedp.Run(clickCtx, chromedp.Click(`#idSIButton9`))
+	cancel2()
+	*last = time.Now()
+}
 
-	// Step 2: wait for either a direct password field, a "use password instead"
-	// link (common when Windows Hello is the default on this account), or an
-	// error that the account doesn't exist.
-	if err := chromedp.Run(ctx,
-		chromedp.Poll(awaitPwdPageJS, nil, chromedp.WithPollingTimeout(30*time.Second)),
-	); err != nil {
-		return fmt.Errorf("waiting for password page: %w", err)
+// handleSwitchToPassword clicks the "use your password instead" link (common
+// when Windows Hello is the account's default), throttled with a 5 s cooldown.
+func handleSwitchToPassword(ctx context.Context, last *time.Time, statusFn func(string)) {
+	if time.Since(*last) < 5*time.Second {
+		return
 	}
+	statusFn("Switching to password sign-in...")
+	clickCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	_ = chromedp.Run(clickCtx, chromedp.Click(`#idA_PWD_SwitchToPassword`))
+	cancel()
+	*last = time.Now()
+}
 
-	var hasPwdField, hasUsernameError bool
-	if err := chromedp.Run(ctx,
-		chromedp.Evaluate(`!!document.querySelector('#i0118')`, &hasPwdField),
-		chromedp.Evaluate(`!!(document.querySelector('#usernameError')?.offsetParent)`, &hasUsernameError),
-	); err != nil {
+// captureCookies returns every cookie in the browser as stdlib cookies.
+func captureCookies(ctx context.Context) ([]*http.Cookie, error) {
+	var raw []*network.Cookie
+	if err := chromedp.Run(ctx, chromedp.ActionFunc(func(ctx context.Context) error {
+		var err error
+		raw, err = network.GetCookies().Do(ctx)
 		return err
+	})); err != nil {
+		return nil, err
 	}
-
-	if hasUsernameError {
-		var errText string
-		_ = chromedp.Run(ctx, chromedp.Evaluate(
-			`document.getElementById('usernameError').textContent.trim()`, &errText))
-		return fmt.Errorf("account not found: %s — is %s correct?", errText, email)
-	}
-
-	if !hasPwdField {
-		// "Use your password instead" link appeared — click it.
-		if err := chromedp.Run(ctx,
-			chromedp.Click(`#idA_PWD_SwitchToPassword`),
-			chromedp.WaitVisible(`#i0118`),
-		); err != nil {
-			return fmt.Errorf("switching to password sign-in: %w", err)
-		}
-	}
-
-	// Step 3: enter password and wait for the page to leave the password step.
-	statusFn("Entering credentials...")
-	if err := chromedp.Run(ctx,
-		chromedp.SendKeys(`#i0118`, password),
-		chromedp.Click(`#idSIButton9`),
-	); err != nil {
-		return fmt.Errorf("password entry: %w", err)
-	}
-
-	// Poll until #i0118 disappears (submit was accepted and page changed) or
-	// passwordError appears (wrong password). Doing this before the MFA loop
-	// ensures the HTML dump captures the MFA page, not the password page.
-	statusFn("Verifying credentials...")
-	if err := chromedp.Run(ctx,
-		chromedp.Poll(`(function(){
-			if (document.getElementById('i0118') === null) return true;
-			var pe = document.getElementById('passwordError');
-			if (pe && pe.offsetParent !== null && pe.textContent.trim())
-				throw new Error(pe.textContent.trim());
-			return false;
-		})()`, nil,
-			chromedp.WithPollingInterval(pollingIntervalMS*time.Millisecond),
-			chromedp.WithPollingTimeout(30*time.Second)),
-	); err != nil {
-		return fmt.Errorf("signing in: %w", err)
-	}
-
-	return nil
+	return rawCookiesToHTTP(raw), nil
 }
 
 // clickNextButton dispatches a JS mouse-event sequence to the visible Next
@@ -592,7 +656,10 @@ func handleSMSCode(ctx context.Context, code string, statusFn func(string)) {
 // statusFn, if non-nil, is called with user-facing progress messages.
 // mfaCodeFn, if non-nil, is called when an SMS code is needed; it should
 // block until the user provides the code and return it.
-func AuthenticateHeadless(ctx context.Context, username, password string, statusFn func(string), mfaCodeFn func() string) ([]*http.Cookie, error) {
+//
+// persist selects the persistent Chrome profile (see profileDir) instead of a
+// throwaway one, so the Microsoft sign-in can be restored by AuthenticateSilent.
+func AuthenticateHeadless(ctx context.Context, username, password string, persist bool, statusFn func(string), mfaCodeFn func() string) ([]*http.Cookie, error) {
 	if statusFn == nil {
 		statusFn = func(string) {}
 	}
@@ -600,27 +667,32 @@ func AuthenticateHeadless(ctx context.Context, username, password string, status
 		mfaCodeFn = func() string { return "" }
 	}
 
-	chromeCtx, cancel, err := launchHeadlessChrome(ctx)
+	chromeCtx, cancel, err := launchHeadlessChrome(ctx, persist)
 	if err != nil {
 		return nil, err
 	}
 	defer cancel()
 
+	// The first page depends on the profile: a fresh one shows the email field,
+	// a remembered account shows the picker, a live session skips login. Navigate
+	// and let the polling loop classify whatever appears.
 	email := username + emailDomain
-	if err := enterEmailAndPassword(chromeCtx, email, password, statusFn); err != nil {
-		return nil, err
+	statusFn("Signing in as " + email + "...")
+	if err := chromedp.Run(chromeCtx, chromedp.Navigate(registrationURL)); err != nil {
+		return nil, fmt.Errorf("opening sign-in page: %w", err)
 	}
 
 	recorder := newDebugRecorder(statusFn)
 	defer recorder.close()
 
 	lastNextClick := time.Time{}
+	lastEmailEntry := time.Time{}
 	lastPwdEntry := time.Time{}
+	lastSwitchClick := time.Time{}
 	lastSmsClick := time.Time{}
 	lastStatus := time.Now()
 	deadline := time.Now().Add(authTimeout)
 
-	var rawCookies []*network.Cookie
 	for time.Now().Before(deadline) {
 		var stateStr string
 		if err := chromedp.Run(chromeCtx, chromedp.Evaluate(detectStateJS, &stateStr)); err != nil {
@@ -644,14 +716,7 @@ func AuthenticateHeadless(ctx context.Context, username, password string, status
 			time.Sleep(pollingIntervalMS * time.Millisecond)
 
 		case stateStr == "done":
-			if err := chromedp.Run(chromeCtx, chromedp.ActionFunc(func(ctx context.Context) error {
-				var err error
-				rawCookies, err = network.GetCookies().Do(ctx)
-				return err
-			})); err != nil {
-				return nil, err
-			}
-			return rawCookiesToHTTP(rawCookies), nil
+			return captureCookies(chromeCtx)
 
 		case stateStr == "kmsi":
 			// "Stay signed in?" was auto-clicked; next iteration detects the redirect.
@@ -672,6 +737,14 @@ func AuthenticateHeadless(ctx context.Context, username, password string, status
 			cancel()
 			time.Sleep(500 * time.Millisecond)
 
+		case stateStr == "email_page":
+			handleEmailPage(chromeCtx, email, &lastEmailEntry, statusFn)
+			time.Sleep(pollingIntervalMS * time.Millisecond)
+
+		case stateStr == "switch_to_pwd":
+			handleSwitchToPassword(chromeCtx, &lastSwitchClick, statusFn)
+			time.Sleep(pollingIntervalMS * time.Millisecond)
+
 		case stateStr == "pwd_page":
 			handlePwdPage(chromeCtx, password, &lastPwdEntry, statusFn)
 			time.Sleep(pollingIntervalMS * time.Millisecond)
@@ -691,6 +764,89 @@ func AuthenticateHeadless(ctx context.Context, username, password string, status
 		}
 	}
 	return nil, fmt.Errorf("authentication timed out after %v", authTimeout)
+}
+
+// ErrInteractiveRequired is returned by AuthenticateSilent when restoring the
+// saved Microsoft sign-in needs a password, an MFA code, or other human input.
+var ErrInteractiveRequired = errors.New("interactive sign-in required")
+
+// silentBudget bounds how long AuthenticateSilent polls before giving up.
+const silentBudget = 20 * time.Second
+
+type silentAction int
+
+const (
+	silentWait        silentAction = iota // keep polling
+	silentClickTile                       // click the remembered-account tile, keep polling
+	silentDone                            // session restored; capture cookies
+	silentInteractive                     // a human or a password is needed
+)
+
+// classifySilentState maps a detectStateJS result to what AuthenticateSilent
+// should do. Any state that needs credentials or an MFA code is interactive;
+// no password is ever typed on the silent path.
+func classifySilentState(state string) silentAction {
+	switch {
+	case state == "done":
+		return silentDone
+	case state == "aad_tile":
+		return silentClickTile
+	case state == "kmsi", state == "next_button", strings.HasPrefix(state, "waiting:"):
+		return silentWait
+	default:
+		// email_page, switch_to_pwd, pwd_page, pick_method, sms_tile, sms_code,
+		// error:*, and anything unrecognised.
+		return silentInteractive
+	}
+}
+
+// AuthenticateSilent tries to restore the Microsoft sign-in remembered by the
+// persistent Chrome profile, without typing a password or asking for a code.
+// It returns the session cookies on success, or ErrInteractiveRequired when the
+// remembered session is gone or expired. Any other error is a launch failure.
+func AuthenticateSilent(ctx context.Context, statusFn func(string)) ([]*http.Cookie, error) {
+	if statusFn == nil {
+		statusFn = func(string) {}
+	}
+	chromeCtx, cancel, err := launchHeadlessChrome(ctx, true)
+	if err != nil {
+		return nil, err
+	}
+	defer cancel()
+
+	statusFn("Restoring previous sign-in...")
+	if err := chromedp.Run(chromeCtx, chromedp.Navigate(registrationURL)); err != nil {
+		return nil, fmt.Errorf("opening sign-in page: %w", err)
+	}
+
+	recorder := newDebugRecorder(statusFn)
+	defer recorder.close()
+
+	lastTileClick := time.Time{}
+	deadline := time.Now().Add(silentBudget)
+	for time.Now().Before(deadline) {
+		var state string
+		if err := chromedp.Run(chromeCtx, chromedp.Evaluate(detectStateJS, &state)); err != nil {
+			return nil, fmt.Errorf("auth poll: %w", err)
+		}
+		recorder.record(chromeCtx, state)
+
+		switch classifySilentState(state) {
+		case silentDone:
+			return captureCookies(chromeCtx)
+		case silentInteractive:
+			return nil, ErrInteractiveRequired
+		case silentClickTile:
+			if time.Since(lastTileClick) >= 5*time.Second {
+				clickCtx, c := context.WithTimeout(chromeCtx, 3*time.Second)
+				_ = chromedp.Run(clickCtx, chromedp.Click(`#aadTile`))
+				c()
+				lastTileClick = time.Now()
+			}
+		}
+		time.Sleep(pollingIntervalMS * time.Millisecond)
+	}
+	return nil, ErrInteractiveRequired
 }
 
 // Authenticate opens a visible browser for the user to complete Microsoft SAML

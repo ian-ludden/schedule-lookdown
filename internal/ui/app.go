@@ -88,7 +88,7 @@ func NewApp(session *auth.Session, cfg config.Config, initial Screen, fixtures m
 		config:         cfg,
 		fixtures:       fixtures,
 		logger:         logger,
-		login:          newLoginModel(),
+		login:          newLoginModel(cfg.PersistChromeProfile),
 		passwordPrompt: newPasswordModel(""),
 		menu:           newMenuModel(),
 		search:         newSearchModel(),
@@ -269,6 +269,9 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// clear the stored password and re-prompt so the user can recover.
 		if auth.IsWSL2() && isCredentialError(msg.err) {
 			_ = auth.DeletePassword()
+			// A rejected password also invalidates the remembered Microsoft
+			// session; drop the saved Chrome profile so it can't go stale.
+			_ = auth.ForgetChromeProfile()
 			a.passwordPrompt = newPasswordModel(a.storedUsername)
 			a.passwordPrompt.err = msg.err
 			a.screen = ScreenPassword
@@ -278,6 +281,11 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m, cmd := a.login.Update(msg)
 		a.login = m.(loginModel)
 		return a, cmd
+
+	case silentAuthFailedMsg:
+		// The remembered sign-in is gone or expired; run the regular flow.
+		a.login.status = ""
+		return a, doCredentialAuthCmd(a.config.PersistChromeProfile)
 
 	case usernameNeededMsg:
 		a.usernamePrompt = newUsernameModel()
@@ -294,7 +302,7 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case passwordSubmittedMsg:
 		_ = auth.StorePassword(msg.password) // best-effort persistence; may fail without a keyring
-		a.login = newLoginModel()
+		a.login = newLoginModel(a.config.PersistChromeProfile)
 		a.screen = ScreenLogin
 		// Drive auth with the password we just collected rather than re-reading
 		// it from the keyring, which may be unavailable (e.g. WSL2 with no Secret
@@ -306,7 +314,7 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 		if username != "" {
-			return a, tea.Batch(a.login.spinner.Tick, doHeadlessAuthCmd(username, msg.password))
+			return a, tea.Batch(a.login.spinner.Tick, doHeadlessAuthCmd(username, msg.password, a.config.PersistChromeProfile))
 		}
 		return a, a.login.Init()
 
@@ -332,9 +340,9 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		_ = auth.StoreUsername(msg.username)
 		if a.session == nil && !a.fixtureMode() {
 			// Bypass keyring round-trip; drive auth with the username we just got.
-			a.login = newLoginModel()
+			a.login = newLoginModel(a.config.PersistChromeProfile)
 			a.screen = ScreenLogin
-			return a, tea.Batch(a.login.spinner.Tick, doAuthCmdForUsername(msg.username))
+			return a, tea.Batch(a.login.spinner.Tick, doAuthCmdForUsername(msg.username, a.config.PersistChromeProfile))
 		}
 		a.screen = ScreenMenu
 		a.applyWindowSizeToMenu()

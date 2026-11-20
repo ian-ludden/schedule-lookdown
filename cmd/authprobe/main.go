@@ -7,6 +7,11 @@
 //
 //	SCHEDULE_LOOKDOWN_DEBUG=1 go run ./cmd/authprobe
 //
+// With -persist the persistent Chrome profile is used, so a second run can
+// restore the Microsoft sign-in silently. -silent only attempts that silent
+// restore (no credentials are read or typed) and reports whether it worked;
+// -forget deletes the saved profile first.
+//
 // Credentials are resolved in order: env (SCHEDULE_LOOKDOWN_USER /
 // SCHEDULE_LOOKDOWN_PASS), then the OS keyring (as stored by normal app use),
 // then an interactive prompt. The password prompt echoes — prefer the keyring
@@ -16,6 +21,8 @@ package main
 import (
 	"bufio"
 	"context"
+	"errors"
+	"flag"
 	"fmt"
 	"os"
 	"os/signal"
@@ -27,6 +34,37 @@ import (
 )
 
 func main() {
+	persist := flag.Bool("persist", false, "use the persistent Chrome profile")
+	silent := flag.Bool("silent", false, "only try a silent restore from the persistent profile")
+	forget := flag.Bool("forget", false, "delete the persistent Chrome profile before running")
+	flag.Parse()
+
+	if *forget {
+		if err := auth.ForgetChromeProfile(); err != nil {
+			fmt.Fprintln(os.Stderr, "forget profile:", err)
+			os.Exit(1)
+		}
+		fmt.Println("deleted persistent Chrome profile")
+	}
+
+	logf := func(s string) { fmt.Printf("[%s] %s\n", time.Now().Format("15:04:05"), s) }
+
+	if *silent {
+		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+		defer stop()
+		cookies, err := auth.AuthenticateSilent(ctx, logf)
+		if errors.Is(err, auth.ErrInteractiveRequired) {
+			fmt.Println("silent restore failed: interactive sign-in required")
+			os.Exit(2)
+		}
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "silent restore error:", err)
+			os.Exit(1)
+		}
+		fmt.Printf("\nSUCCESS (silent): captured %d cookies\n", len(cookies))
+		return
+	}
+
 	in := bufio.NewReader(os.Stdin)
 
 	username := os.Getenv("SCHEDULE_LOOKDOWN_USER")
@@ -53,10 +91,9 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	logf := func(s string) { fmt.Printf("[%s] %s\n", time.Now().Format("15:04:05"), s) }
 	logf("Authenticating as " + username + " (headless)")
 
-	cookies, err := auth.AuthenticateHeadless(ctx, username, password, logf, func() string {
+	cookies, err := auth.AuthenticateHeadless(ctx, username, password, *persist, logf, func() string {
 		return prompt(in, "Enter SMS code: ")
 	})
 	if err != nil {

@@ -40,6 +40,11 @@ type Config struct {
 	// expanded to the user's home directory. When empty, downloads go to the
 	// first usable of $XDG_DOWNLOAD_DIR, ~/Downloads, or the app's data dir.
 	DownloadDir string `toml:"download_dir"`
+	// PersistChromeProfile keeps the headless Chrome profile between runs so the
+	// Microsoft sign-in can be restored without a password or SMS code (WSL2
+	// headless path only). The profile holds an authenticated session; see
+	// internal/auth/profile.go.
+	PersistChromeProfile bool `toml:"persist_chrome_profile"`
 }
 
 // Default returns the configuration used when no file exists or a value is
@@ -48,6 +53,7 @@ func Default() Config {
 	return Config{
 		DefaultTerm:                DefaultTermCurrent,
 		JumpToRosterOnSingleResult: false,
+		PersistChromeProfile:       false,
 	}
 }
 
@@ -68,6 +74,12 @@ jump_to_roster_on_single_result = false
 # directory. When unset, downloads go to the first usable of $XDG_DOWNLOAD_DIR,
 # ~/Downloads, or the app's own data directory.
 # download_dir = "~/Downloads"
+
+# Keep the headless Chrome profile between runs so a later launch can restore
+# the Microsoft sign-in without a password or SMS code (WSL2 only). The saved
+# profile is an authenticated session stored under ~/.local/state/schedule-lookdown/;
+# it is deleted automatically if Microsoft rejects the stored password.
+persist_chrome_profile = false
 `
 
 // configPath returns the path to config.toml, creating its parent directory with
